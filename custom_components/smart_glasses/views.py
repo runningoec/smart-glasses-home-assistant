@@ -326,7 +326,7 @@ class PairApproveView(HomeAssistantView):
         # pairing record. Stops a stolen code alone from being claimed.
         if not pairing or pairing.get("code") != code:
             return self.json_message("no pairing matches code+session_id", status_code=404)
-        if pairing["token"]:
+        if pairing.get("token_hash"):
             return self.json_message("pairing already approved", status_code=409)
 
         # The approving user is the one HA's auth middleware attached.
