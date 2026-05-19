@@ -64,6 +64,11 @@ class SmartGlassesStore:
         self._hass = hass
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._data: dict[str, Any] = {"cards": [], "pairings": {}, "audit": []}
+        # In-memory reverse index: token_hash → session_id. Rebuilt from the
+        # persisted pairings dict at load time; mutated by approve/delete.
+        # Lets find_pairing_by_token be O(1) instead of O(N) over pairings,
+        # which matters if a user accumulates several approved glasses.
+        self._token_index: dict[str, str] = {}
 
     async def async_load(self) -> None:
         loaded = await self._store.async_load()
@@ -86,6 +91,16 @@ class SmartGlassesStore:
                 else:
                     self._data["cards"] = []
         await self._migrate_legacy_llat_pairings()
+        self._rebuild_token_index()
+
+    def _rebuild_token_index(self) -> None:
+        """Populate ``_token_index`` from the current pairings dict. Called
+        after load and after migration; cheap (one pass over a small dict)."""
+        self._token_index.clear()
+        for sid, p in self._data["pairings"].items():
+            h = p.get("token_hash")
+            if h:
+                self._token_index[h] = sid
 
     async def _migrate_legacy_llat_pairings(self) -> None:
         """One-shot cleanup for installs that pre-date the hashed-token model.
@@ -200,10 +215,12 @@ class SmartGlassesStore:
         p = self._data["pairings"].get(session_id)
         if not p:
             raise KeyError(session_id)
+        h = hash_token(token)
         p["user_id"] = user_id
-        p["token_hash"] = hash_token(token)
+        p["token_hash"] = h
         p["token_pickup"] = token
         p["approved_at"] = time.time()
+        self._token_index[h] = session_id
         await self.async_save()
         return p
 
@@ -218,20 +235,31 @@ class SmartGlassesStore:
 
     def find_pairing_by_token(self, token: str) -> dict[str, Any] | None:
         """Look up a pairing by Bearer token — used on every glasses-API call.
-        Uses hmac.compare_digest for the hash comparison so timing doesn't
-        leak which (if any) pairing matched."""
+
+        O(1) average via the ``_token_index`` reverse map. The final equality
+        check (after the dict hit) goes through ``hmac.compare_digest`` so a
+        timing attacker can't probe matching prefixes of the stored hash.
+        """
         if not token:
             return None
         h = hash_token(token)
-        for p in self._data["pairings"].values():
-            stored = p.get("token_hash")
-            if stored and hmac.compare_digest(stored, h):
-                return p
-        return None
+        sid = self._token_index.get(h)
+        if not sid:
+            return None
+        p = self._data["pairings"].get(sid)
+        if not p:
+            return None
+        stored = p.get("token_hash")
+        if not stored or not hmac.compare_digest(stored, h):
+            return None
+        return p
 
     async def async_delete_pairing(self, session_id: str) -> dict[str, Any] | None:
         p = self._data["pairings"].pop(session_id, None)
         if p is not None:
+            h = p.get("token_hash")
+            if h:
+                self._token_index.pop(h, None)
             await self.async_save()
         return p
 

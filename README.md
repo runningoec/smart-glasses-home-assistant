@@ -1,22 +1,49 @@
 # Smart Glasses for Home Assistant
 
 [![HACS Custom][hacs-shield]][hacs-link]
+![hassfest](https://github.com/runningoec/hacs-smart-glasses/actions/workflows/hassfest.yml/badge.svg)
+![HACS validation](https://github.com/runningoec/hacs-smart-glasses/actions/workflows/hacs-validate.yml/badge.svg)
+![tests](https://github.com/runningoec/hacs-smart-glasses/actions/workflows/test.yml/badge.svg)
 
 A HACS integration that adds a small Web App for the Meta Ray-Ban Display
 (and any other 600x600 glasses-style HUD) directly to your Home Assistant
 instance. Pair the glasses to HA once via a phone, then glance at any 1–8
-entities live.
+entities per card and tap them to fire HA services.
 
 [hacs-shield]: https://img.shields.io/badge/HACS-Custom-orange.svg
 [hacs-link]:   https://github.com/hacs/integration
 
 ## What you get
 
-- **Management panel** at `<your-ha>/smart-glasses` — pick which entities the
-  glasses should show, manage active pairings.
+- **Management panel** at `<your-ha>/smart-glasses` — pick the entities and
+  actions on each card, manage pairings, edit via YAML, see an audit log.
 - **Glasses Web App** at `<your-ha>/smart-glasses-app` — what the glasses
-  load. First time: shows a short pairing code. After: an adaptive grid of
-  the entities you chose, live-updating over HA's websocket.
+  load. First time: shows a short pairing code. After: adaptive grids of
+  the entities/actions you configured, live-updating over WebSocket. Tap or
+  arrow-key + Enter to fire toggles and services.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+  subgraph user["Your network"]
+    HA[Home Assistant]
+    subgraph integration["smart_glasses integration"]
+      Panel["/smart-glasses<br/>(admin panel)"]
+      Glance["/smart-glasses-app<br/>(glasses Web App)"]
+      Proxy["/api/smart_glasses/glance/*<br/>(scope-limited proxy)"]
+    end
+    HA --- Panel
+    HA --- Glance
+    HA --- Proxy
+  end
+  Phone["Phone browser<br/>(HA login)"]
+  Glasses["Meta Ray-Ban Display"]
+  Phone -- approve pair --> Panel
+  Glasses -- HTTPS --> Glance
+  Glasses -- Bearer token --> Proxy
+  Proxy -- "scoped<br/>service calls" --> HA
+```
 
 ## Why a HACS integration (and not a separate cloud app)?
 
@@ -72,10 +99,36 @@ The app appears immediately at the bottom of your Meta Ray-Ban Display app grid.
    (e.g. `R7P9XQ`) and a hint pointing to `<your-ha>/smart-glasses`.
 2. On your phone, open `<your-ha>/smart-glasses` (you're already logged in
    to HA so the panel just opens).
-3. In the **Pairings** section, type the code → **Approve**.
+3. In the **Glasses pairings** section, click **Approve** next to the
+   matching code (or type the code into the approval field and submit).
 4. Within a couple seconds the glasses switch from the pairing screen to
    the live entity grid. Pairing is sticky — the glasses remember the
    token and skip step 3 from now on.
+
+#### Pairing flow
+
+```mermaid
+sequenceDiagram
+  participant G as Glasses Web App
+  participant S as smart_glasses (server)
+  participant P as Admin Panel (browser)
+
+  G->>S: POST /pair/start
+  S-->>G: { session_id, code: "R7P9XQ" }
+  loop every 2s
+    G->>S: GET /pair/{session_id}/token
+    S-->>G: 202 { status: pending, code }
+  end
+  P->>S: POST /pair/approve { code, session_id }
+  S->>S: mint token, store sha256(token)
+  S-->>P: { ok: true }
+  G->>S: GET /pair/{session_id}/token
+  S-->>G: 200 { token } (pickup wiped after this read)
+  G->>G: store token in localStorage
+  G->>S: GET /glance/cards    (Bearer)
+  G->>S: GET /glance/states   (Bearer)
+  G->>S: WS  /glance/ws       (Bearer in first frame)
+```
 
 ### Re-pair / hand off to a different account
 
@@ -120,8 +173,26 @@ seconds later. Not catastrophic, but if you want per-client rate
 limiting, enable `use_x_forwarded_for` and list your proxy under
 `trusted_proxies` in HA's `http:` config.
 
+## Troubleshooting
+
+| Symptom on glasses / panel | What it means | What to do |
+|---|---|---|
+| Pair code is `------` and never changes | Server returned 429 to `/pair/start` (rate-limited, 6/min per IP) | Wait a minute, re-launch the app. If you're behind a reverse proxy and many people share the apparent IP, enable `use_x_forwarded_for` in HA's HTTP config. |
+| Pair code keeps changing every few seconds | An older bug stored the literal string `"undefined"` as the token, causing a relaunch loop. Should be auto-recovered on first load of v0.6.2+. | Open the Web App once; the localStorage scrubbing kicks in and the next code stays stable. |
+| `Disconnected. Re-launch the app to retry.` | The glasses tried to reconnect to the WebSocket proxy 20+ times and gave up | Back-gesture out of the app on the glasses and re-launch it. |
+| `No pending pairing with code XYZ` in the panel | The cached pairings list is stale | Click **Approve** directly on the row (or refresh the page); the panel re-fetches on each approve attempt as of v0.6.1. |
+| `pairing already approved` | The session has a token and was approved earlier | Revoke and ask the glasses to re-pair (Shift+Escape inside the Web App wipes its localStorage). |
+| `service call not permitted by card config` (403) | The glasses tried to fire a service that isn't pinned to a card | Add the action to a card in the panel, or use an entity item if the user just wants `homeassistant.toggle`. |
+| Panel says `cross-site request rejected` | Your browser sent the API call with `Sec-Fetch-Site: cross-site` | You're hitting the API from another origin; load the panel from your HA's URL, not a third-party site. |
+| YAML save fails with `body too large` | YAML payload exceeded 64 KiB | Your dashboard is unusually large; trim cards or split. |
+
 ## Status
 
-- v1: read-only adaptive grid of 1–8 entities. Live websocket updates.
-- Not yet: glasses-side interaction (toggle lights, fire scripts). Coming
-  in v2 once we know what survives the keyboard-only input model.
+- **v0.7**: full glasses-side interactivity (tap-to-fire, scoped service
+  proxy, multi-card swipe + arrow navigation), YAML config editor, audit
+  log, hashed session tokens at rest, CSRF guard on mutating endpoints,
+  service blocklist for system-control operations.
+- **Roadmap**: HACS default-store submission, full HA-integration test
+  coverage (currently only pure-logic tests are wired up), mobile-
+  responsive panel CSS, brand assets (`icon.png`/`logo.png`), more
+  translations.

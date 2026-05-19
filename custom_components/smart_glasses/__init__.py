@@ -13,11 +13,14 @@ import logging
 from homeassistant.components.frontend import async_register_built_in_panel
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from .const import (
     DOMAIN,
     PANEL_JS_ROUTE,
     PANEL_URL,
+    STORAGE_KEY,
+    STORAGE_VERSION,
     VERSION,
 )
 from .store import SmartGlassesStore
@@ -73,3 +76,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_remove_panel(hass, PANEL_URL.lstrip("/"))
     hass.data.pop(DOMAIN, None)
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Called by HA when the integration is *removed* (not just unloaded).
+    Wipes our persisted storage so a fresh install starts from zero — no
+    orphaned pairings, no stale audit log, no leftover card config.
+
+    HA itself doesn't prompt for confirmation here; the user already
+    confirmed in the Devices & Services UI before this is invoked.
+    """
+    store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+    try:
+        await store.async_remove()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("could not remove smart_glasses storage on uninstall")
