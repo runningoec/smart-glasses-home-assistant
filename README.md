@@ -36,19 +36,53 @@ entities live.
 4. **Settings → Devices & Services → + Add Integration → "Smart Glasses"** —
    one click, no questions. The panel appears in your sidebar.
 
-Then to finish setup:
+Then:
 
-5. Open the **Smart Glasses** panel in the sidebar → pick up to 8 entities → Save.
-6. Register the glasses-side Web App URL with Meta:
-   - Wearables Developer Center → your project → Web App URL:
-     `https://<your-ha-public-domain>/smart-glasses-app`
-   - HA needs to be reachable on HTTPS (Nabu Casa, Cloudflare Tunnel, or
-     your own reverse proxy — whatever you already use to reach HA from
-     outside).
-7. Load the Web App on the glasses → a 6-character pairing code appears →
-   from your phone, open the Smart Glasses panel and type the code in the
-   **Pairings** section → **Approve**. The glasses pick up the access token
-   on their next poll and switch to the live grid.
+5. Open the **Smart Glasses** panel in the sidebar → pick up to 8 entities → **Save**.
+
+## Add to your glasses
+
+You need a way for your HA to be reachable from the open internet on HTTPS
+(Nabu Casa, a Cloudflare Tunnel, or your own reverse proxy with a TLS cert
+— whatever you already use to reach HA from outside the house). The
+glasses fetch the Web App from that URL.
+
+**Minimum versions**: Meta Ray-Ban Display firmware ≥ `v125`, Meta AI app ≥ `v272`.
+
+### 1. Enable Developer Mode on your phone (one-time)
+
+Skip this if Developer Mode is already on.
+
+1. Open the **Meta AI app**.
+2. **Settings → App Info** → tap the **app version number 5 times in a row**.
+3. Confirm the prompt that appears. Developer Mode now persists across sessions.
+
+### 2. Add the Web App
+
+1. **Meta AI app → App Settings → App Connections → Web Apps → Add a Web App**.
+2. **App name**: `Smart Glasses HA` (or whatever you like).
+3. **URL**: `https://<your-ha-public-domain>/smart-glasses-app`
+4. Tap **Connect**.
+
+The app appears immediately at the bottom of your Meta Ray-Ban Display app grid.
+
+### 3. Pair the glasses to HA (one-time per glasses)
+
+1. Launch the app on the glasses. You'll see a **6-character pairing code**
+   (e.g. `R7P9XQ`) and a hint pointing to `<your-ha>/smart-glasses`.
+2. On your phone, open `<your-ha>/smart-glasses` (you're already logged in
+   to HA so the panel just opens).
+3. In the **Pairings** section, type the code → **Approve**.
+4. Within a couple seconds the glasses switch from the pairing screen to
+   the live entity grid. Pairing is sticky — the glasses remember the
+   token and skip step 3 from now on.
+
+### Re-pair / hand off to a different account
+
+On the glasses, hold **Shift + Escape** in the Web App to wipe local
+credentials and start over. From the HA panel, **Revoke** kills the
+token at the HA side too (the long-lived access token is removed from
+the approving user's profile).
 
 ## Pairing security
 
