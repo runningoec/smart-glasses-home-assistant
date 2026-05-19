@@ -124,6 +124,18 @@
     .cell[data-stale="true"] .value { color: var(--stale); }
     /* Bright outline on the focused cell while focusMode === "cells". */
     .cell.focused { border-color: var(--fg); background: rgba(255,255,255,0.12); }
+    /* Armed: tapped once on a "confirm: true" item — waits for second tap. */
+    .cell.armed {
+      border-color: var(--warn);
+      background: rgba(252, 204, 102, 0.10);
+    }
+    .cell.armed::after {
+      content: "TAP AGAIN TO CONFIRM";
+      position: absolute; left: 0; right: 0; bottom: 4px;
+      text-align: center; font-size: 12px; font-weight: 700;
+      color: var(--warn); letter-spacing: 1px;
+    }
+    .cell { position: relative; }
 
     #empty {
       flex: 1; display: flex; flex-direction: column;
@@ -217,6 +229,12 @@
     //             back to tabs.
     let focusMode = "tabs";
     let focusedCellIndex = 0;
+    // Two-step confirm state: when a "confirm" item is fired the first time,
+    // we arm it and wait for a second invocation within ARM_WINDOW_MS.
+    // Navigation, timeout, or any non-arming action clears it.
+    const ARM_WINDOW_MS = 5000;
+    let armed = null;            // { cardIdx, cellIdx, until }
+    let armedTimer = null;
     let states = new Map();      // entity_id -> state object (live)
     let ws = null;
     let reconnectAttempts = 0;
@@ -502,11 +520,13 @@
       renderTabs();
 
       $grid.dataset.count = String(items.length);
+      const armedIdx = (armed && armed.cardIdx === currentCardIndex) ? armed.cellIdx : -1;
       $grid.innerHTML = items.map((item, idx) => {
         const focused = (focusMode === "cells" && idx === focusedCellIndex) ? " focused" : "";
+        const armedCls = (idx === armedIdx) ? " armed" : "";
         if (item.type === "action") {
           return `
-            <div class="cell${focused}" data-idx="${idx}" data-type="action" data-on="unset" data-stale="false">
+            <div class="cell${focused}${armedCls}" data-idx="${idx}" data-type="action" data-on="unset" data-stale="false">
               <div class="name">${esc(item.name)}</div>
               <div class="value">ACT</div>
             </div>
@@ -520,7 +540,7 @@
                       : s?.state === "off" || s?.state === "closed" ? "false"
                       : "unset";
           return `
-            <div class="cell${focused}" data-idx="${idx}" data-type="entity" data-eid="${esc(eid)}" data-on="${onAttr}" data-stale="${stale}">
+            <div class="cell${focused}${armedCls}" data-idx="${idx}" data-type="entity" data-eid="${esc(eid)}" data-on="${onAttr}" data-stale="${stale}">
               <div class="name">${esc(name)}</div>
               <div class="value">${s ? esc(fmtState(s)) : "—"}</div>
             </div>
@@ -544,6 +564,9 @@
     // Common helpers for nav.
     function switchCard(delta) {
       if (cards.length === 0) return;
+      // Moving cards drops any in-flight arm. Wouldn't make sense to keep
+      // it pointed at a cell the user can't see anymore.
+      if (armed) clearArmed();
       currentCardIndex = (currentCardIndex + delta + cards.length) % cards.length;
       focusedCellIndex = 0;
       renderGrid();
@@ -554,10 +577,63 @@
       const items = cards[currentCardIndex]?.items ?? [];
       const item = items[focusedCellIndex];
       if (!item) return;
-      fireItem(item);
+      fireItem(item, focusedCellIndex);
     }
 
-    function fireItem(item) {
+    // Decide whether tapping an item right now requires a confirm step.
+    // - true            → always
+    // - {after,before}  → only when the current local time falls inside
+    //                     the window (after≤now≤before, wrapping at midnight)
+    // - missing/false   → never
+    function shouldConfirm(item) {
+      const c = item?.confirm;
+      if (c === true) return true;
+      if (!c || typeof c !== "object") return false;
+      const now = new Date();
+      const minutes = now.getHours() * 60 + now.getMinutes();
+      const toMin = (s) => {
+        const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(s ?? "");
+        return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+      };
+      const after = toMin(c.after);
+      const before = toMin(c.before);
+      if (after === null && before === null) return false;
+      if (after !== null && before !== null) {
+        // Same-day window: after ≤ now ≤ before, or wrap-around (e.g. 22:00..07:00)
+        return after <= before
+          ? (minutes >= after && minutes <= before)
+          : (minutes >= after || minutes <= before);
+      }
+      if (after  !== null) return minutes >= after;
+      return minutes <= before;
+    }
+
+    function clearArmed() {
+      if (armedTimer) { clearTimeout(armedTimer); armedTimer = null; }
+      armed = null;
+    }
+
+    function fireItem(item, cellIdx) {
+      // Confirm gate: two taps within ARM_WINDOW_MS. The first tap arms
+      // (and shows "TAP AGAIN TO CONFIRM" on the cell); the second tap
+      // within the window actually fires. Anything else (navigating away,
+      // timeout) clears the arm.
+      if (shouldConfirm(item)) {
+        const now = Date.now();
+        const sameCell = armed
+          && armed.cardIdx === currentCardIndex
+          && armed.cellIdx === cellIdx
+          && now < armed.until;
+        if (!sameCell) {
+          armed = { cardIdx: currentCardIndex, cellIdx, until: now + ARM_WINDOW_MS };
+          if (armedTimer) clearTimeout(armedTimer);
+          armedTimer = setTimeout(() => { clearArmed(); renderGrid(); }, ARM_WINDOW_MS + 50);
+          renderGrid();
+          return;
+        }
+        // Confirmed — fall through to actually fire.
+        clearArmed();
+      }
       if (item.type === "action") {
         const parts = item.action.split(".");
         if (parts.length !== 2) return;
@@ -591,11 +667,13 @@
       const idx = Number(cell.dataset.idx);
       const item = cards[currentCardIndex]?.items?.[idx];
       if (!item) return;
-      // Move focus to the tapped cell, then fire it.
+      // Move focus to the tapped cell, then fire it. fireItem handles the
+      // confirm gate — tapping a "confirm: true" cell once arms it, a
+      // second tap inside the window fires.
       focusMode = "cells";
       focusedCellIndex = idx;
       renderGrid();
-      fireItem(item);
+      fireItem(item, idx);
     });
 
     // ----- Bootstrap ------------------------------------------------------
@@ -671,6 +749,10 @@
         renderGrid();
         return;
       }
+      // Any key in cells mode other than Enter cancels an in-flight arm
+      // (so navigating away or pressing Esc drops the "tap again to
+      // confirm" state). Enter handles arm/fire on its own below.
+      if (evt.key !== "Enter" && armed) clearArmed();
       const cols = gridCols(items.length);
       const row = Math.floor(focusedCellIndex / cols);
       const col = focusedCellIndex % cols;

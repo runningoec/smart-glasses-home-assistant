@@ -38,6 +38,18 @@ function describeAudit(a) {
   }
 }
 
+// Describe the confirm config in human terms for the readonly indicator
+// shown on items whose confirm is a time window (the checkbox can't express
+// time bounds — those have to be set via the YAML editor).
+function describeConfirm(c) {
+  if (c === true) return "always";
+  if (!c || typeof c !== "object") return "";
+  const parts = [];
+  if (c.after)  parts.push(`after ${c.after}`);
+  if (c.before) parts.push(`before ${c.before}`);
+  return parts.join(", ") || "always";
+}
+
 class SmartGlassesPanel extends HTMLElement {
   constructor() {
     super();
@@ -209,7 +221,9 @@ class SmartGlassesPanel extends HTMLElement {
       await this._api("PUT", "/cards", { cards: this._cards });
       this._dirtyCards = false;
       this._error = null;
-      this._showToast("Saved");
+      // Tell the user what just happened — admins won't always remember
+      // that the glasses pick up changes on their next minute-poll.
+      this._showToast("Saved · glasses pick up changes within a minute");
       await this._loadAll();
     } catch (err) {
       this._error = err.message;
@@ -483,6 +497,12 @@ class SmartGlassesPanel extends HTMLElement {
         .audit-row .when { color: var(--secondary-text-color); font-size: 12px; margin-left: 12px; white-space: nowrap; }
         .audit-row code { font-size: 13px; background: var(--secondary-background-color, #2a2a2a);
                           padding: 1px 5px; border-radius: 4px; }
+        .confirm-toggle {
+          display: inline-flex; align-items: center; gap: 6px;
+          font-size: 13px; color: var(--secondary-text-color);
+          cursor: pointer; user-select: none; margin-right: 8px;
+        }
+        .confirm-toggle input { margin: 0; }
       </style>
       <div class="root">
         ${this._toast ? `<div class="toast">${esc(this._toast)}</div>` : ""}
@@ -558,26 +578,37 @@ class SmartGlassesPanel extends HTMLElement {
           ${currentCard.items.length === 0
             ? `<div class="meta">No items on this card.</div>`
             : currentCard.items.map((item, idx) => {
+                const confirmCell = (() => {
+                  // Time-bound confirm is YAML-only (the panel UI would get
+                  // crowded with date/time pickers); show a readonly badge.
+                  if (item.confirm && typeof item.confirm === "object") {
+                    return `<span class="pill" title="Set via YAML editor">Confirm: ${esc(describeConfirm(item.confirm))}</span>`;
+                  }
+                  const checked = item.confirm === true ? "checked" : "";
+                  return `<label class="confirm-toggle"><input type="checkbox" data-action="toggle-confirm" data-index="${idx}" ${checked}> Confirm</label>`;
+                })();
                 if (item.type === 'entity') {
                   const s = this._hass.states[item.entity_id];
                   const name = s?.attributes.friendly_name || item.entity_id;
                   const state = s ? `${s.state}${s.attributes.unit_of_measurement ? " " + s.attributes.unit_of_measurement : ""}` : "—";
                   return `
                     <div class="selected-row">
-                      <div>
+                      <div style="flex:1;">
                         <div class="entity-name">${esc(name)}</div>
                         <div class="entity-id">${esc(item.entity_id)} · <span style="color:var(--primary-text-color)">${esc(state)}</span></div>
                       </div>
+                      ${confirmCell}
                       <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
                     </div>
                   `;
                 } else if (item.type === 'action') {
                   return `
                     <div class="selected-row">
-                      <div>
+                      <div style="flex:1;">
                         <div class="entity-name">${esc(item.name)}</div>
                         <div class="entity-id">${esc(item.action)}${item.target ? ` · ${esc(item.target)}` : ''} <span class="pill" style="margin-left: 4px; background: rgba(3, 169, 244, 0.2); color: #03a9f4;">action</span></div>
                       </div>
+                      ${confirmCell}
                       <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
                     </div>
                   `;
@@ -752,6 +783,21 @@ class SmartGlassesPanel extends HTMLElement {
             this._dirtyCards = true;
             this._render();
           }
+        } else if (action === "toggle-confirm") {
+          // Per-item "Require confirmation on glasses" toggle. We don't
+          // re-render on each click because that would lose the checkbox's
+          // visual state mid-animation; we just mark dirty so the next
+          // Save persists it.
+          const card = this._cards.find(c => c.id === this._selectedCardId);
+          const idx = parseInt(el.dataset.index, 10);
+          const item = card?.items?.[idx];
+          if (!item) return;
+          if (el.checked) {
+            item.confirm = true;
+          } else {
+            delete item.confirm;
+          }
+          this._dirtyCards = true;
         } else if (action === "add-custom-action") {
           const card = this._cards.find(c => c.id === this._selectedCardId);
           if (!card) return;

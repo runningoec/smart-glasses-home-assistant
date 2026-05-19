@@ -173,6 +173,47 @@ seconds later. Not catastrophic, but if you want per-client rate
 limiting, enable `use_x_forwarded_for` and list your proxy under
 `trusted_proxies` in HA's `http:` config.
 
+## Tap-to-confirm on sensitive items
+
+Any item on a card can carry an optional `confirm` field that gates the
+"fire on tap" behaviour behind a second tap. Useful for doors, locks,
+alarms, or just bright lights at 2 AM that you don't want to hit by
+accident.
+
+```yaml
+cards:
+  - id: home
+    name: Home
+    items:
+      # Always require a second tap.
+      - type: entity
+        entity_id: cover.garage_door
+        confirm: true
+
+      # Lock-style action — always confirm.
+      - type: action
+        name: Disarm alarm
+        action: alarm_control_panel.alarm_disarm
+        target: alarm_control_panel.home
+        confirm: true
+
+      # Only require confirm during a window (overnight here — wraps
+      # past midnight automatically when after > before).
+      - type: entity
+        entity_id: light.bedroom_main
+        confirm:
+          after:  "22:00"
+          before: "07:00"
+```
+
+When a confirm-gated item is tapped (or Enter'd from the keyboard nav),
+the cell turns yellow with **TAP AGAIN TO CONFIRM** at the bottom. A
+second tap within ~5 seconds fires the action; navigating away or
+waiting it out cancels.
+
+The panel checkbox sets `confirm: true`. Time-windowed configs are
+read-only in the panel UI — set them in the YAML editor.
+
 ## Troubleshooting
 
 | Symptom on glasses / panel | What it means | What to do |

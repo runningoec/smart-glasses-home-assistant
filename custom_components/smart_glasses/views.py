@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 import string
 import time
@@ -202,6 +203,34 @@ def _rate_limit_check(ip: str) -> bool:
     return True
 
 
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _validate_confirm(value: Any) -> str | None:
+    """Validate an item's optional ``confirm`` field. Returns None on success
+    or an error string. Allowed forms:
+
+    - ``True``                              — always require arm-then-fire
+    - ``False`` (or omitted)                — never
+    - ``{"after": "HH:MM"}``                — require after the given time
+    - ``{"before": "HH:MM"}``               — require until the given time
+    - ``{"after": "HH:MM", "before": ...}`` — window (wraps across midnight
+                                              if after > before)
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, dict):
+        return "confirm must be a boolean or {after?, before?} object"
+    if not value:
+        return "confirm: {} is ambiguous — use true or set after/before"
+    for k, v in value.items():
+        if k not in ("after", "before"):
+            return f"confirm: unknown key '{k}'"
+        if not isinstance(v, str) or not _TIME_RE.match(v):
+            return f"confirm.{k} must be 'HH:MM' (24-hour)"
+    return None
+
+
 def _validate_cards(hass: HomeAssistant, cards: Any) -> str | None:
     """Validate a parsed cards list. Returns None on success, or an error
     string ready to surface to the user. Shared between the JSON and YAML
@@ -236,6 +265,9 @@ def _validate_cards(hass: HomeAssistant, cards: Any) -> str | None:
                     return "action target must be a string"
             else:
                 return f"unknown item type: {item['type']}"
+            err = _validate_confirm(item.get("confirm"))
+            if err is not None:
+                return err
     return None
 
 
