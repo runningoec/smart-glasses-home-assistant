@@ -292,10 +292,10 @@ class PairingsListView(HomeAssistantView):
             sanitized.append({
                 "session_id": p["session_id"],
                 "code": p["code"],
-                "approved": bool(p["token"]),
-                "user_id": p["user_id"],
+                "approved": bool(p.get("token_hash")),
+                "user_id": p.get("user_id"),
                 "created_at": p["created_at"],
-                "approved_at": p["approved_at"],
+                "approved_at": p.get("approved_at"),
             })
         return self.json({"pairings": sanitized})
 
