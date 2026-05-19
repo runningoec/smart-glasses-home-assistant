@@ -25,11 +25,13 @@ class SmartGlassesPanel extends HTMLElement {
     if (!this._loaded) {
       this._loaded = true;
       this._loadAll();
-    } else {
-      // Re-render on hass updates so live entity states (used in the
-      // "currently selected" list to show current value) stay fresh.
-      this._render();
     }
+    // We deliberately DON'T re-render on every hass update. HA's frontend
+    // pushes a new hass object on every state change anywhere in the system
+    // — re-rendering on each one tore through input focus and scroll
+    // position. The management panel doesn't need live state; the user
+    // sees a snapshot when they open it, and explicit actions trigger
+    // their own re-renders.
   }
   set narrow(narrow) { this._narrow = narrow; }
   set route(route) { this._route = route; }
@@ -138,6 +140,14 @@ class SmartGlassesPanel extends HTMLElement {
       this.innerHTML = "<p style='padding:24px'>Loading…</p>";
       return;
     }
+
+    // Snapshot what we want to preserve across the upcoming innerHTML wipe.
+    // We re-render rarely (only on explicit user actions) so this is cheap.
+    const active = document.activeElement;
+    const focusedAction = active?.closest?.("[data-action]")?.dataset?.action;
+    const selStart = (active && "selectionStart" in active) ? active.selectionStart : null;
+    const selEnd   = (active && "selectionEnd"   in active) ? active.selectionEnd   : null;
+    const listScroll = this.querySelector(".entity-list")?.scrollTop ?? 0;
 
     const search = this._search.toLowerCase();
     const matching = this._allEntities()
@@ -280,6 +290,19 @@ class SmartGlassesPanel extends HTMLElement {
         </div>
       </div>
     `;
+
+    // Restore focus + scroll. Inputs identified by data-action.
+    if (focusedAction) {
+      const target = this.querySelector(`[data-action="${focusedAction}"]`);
+      if (target && typeof target.focus === "function") {
+        target.focus();
+        if (selStart !== null && "setSelectionRange" in target) {
+          try { target.setSelectionRange(selStart, selEnd ?? selStart); } catch { /* ignore */ }
+        }
+      }
+    }
+    const list = this.querySelector(".entity-list");
+    if (list) list.scrollTop = listScroll;
 
     // Wire up event handlers (delegated).
     this.querySelectorAll("[data-action]").forEach((el) => {
