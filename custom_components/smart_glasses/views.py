@@ -96,6 +96,29 @@ def _service_blocked(domain: str, service: str) -> bool:
     return domain in _BLOCKED_DOMAINS or f"{domain}.{service}" in _BLOCKED_SERVICES
 
 
+# Per-domain "natural action" services that an entity item on a card
+# implicitly authorizes. Tapping an entity cell on the glasses dispatches
+# the right service for that entity's domain — scenes get turn_on,
+# buttons get press, etc. The generic ``homeassistant.toggle`` is also
+# allowed everywhere for legacy compatibility.
+_DOMAIN_TOGGLE_SERVICES: dict[str, frozenset[str]] = {
+    "light":         frozenset({"toggle", "turn_on", "turn_off"}),
+    "switch":        frozenset({"toggle", "turn_on", "turn_off"}),
+    "fan":           frozenset({"toggle", "turn_on", "turn_off"}),
+    "input_boolean": frozenset({"toggle", "turn_on", "turn_off"}),
+    "climate":       frozenset({"toggle", "turn_on", "turn_off"}),
+    "media_player":  frozenset({"toggle", "turn_on", "turn_off", "media_play_pause"}),
+    "cover":         frozenset({"toggle", "open_cover", "close_cover"}),
+    "scene":         frozenset({"turn_on"}),
+    "script":        frozenset({"turn_on", "toggle"}),
+    "automation":    frozenset({"trigger", "toggle", "turn_on", "turn_off"}),
+    "button":        frozenset({"press"}),
+    "input_button":  frozenset({"press"}),
+    "lock":          frozenset({"lock", "unlock"}),
+    "group":         frozenset({"toggle", "turn_on", "turn_off"}),
+}
+
+
 def _csrf_guard(request: web.Request) -> bool:
     """Return True iff the request is plausibly same-origin (safe to honour).
 
@@ -725,8 +748,18 @@ def _service_call_allowed(
                 # `None == None` covers the "no-target action, no-target call".
                 if item.get("target") == target_eid:
                     return True
-            elif t == "entity" and service_str == "homeassistant.toggle":
-                if item.get("entity_id") == target_eid:
+            elif t == "entity" and item.get("entity_id") == target_eid:
+                # Tapping an entity cell allows either the universal
+                # ``homeassistant.toggle`` (still works for many domains)
+                # OR a natural service from the entity's own domain
+                # (scene.turn_on, button.press, cover.toggle, etc.).
+                if service_str == "homeassistant.toggle":
+                    return True
+                entity_domain = target_eid.split(".")[0] if target_eid else ""
+                if (
+                    domain == entity_domain
+                    and service in _DOMAIN_TOGGLE_SERVICES.get(entity_domain, frozenset())
+                ):
                     return True
     return False
 

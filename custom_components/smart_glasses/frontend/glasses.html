@@ -484,12 +484,38 @@
       const v = s.state;
       const dom = s.entity_id.split(".")[0];
       const dc = s.attributes?.device_class;
-      if (v === "unavailable" || v === "unknown") return "—";
+      if (v === "unavailable" || v === "unknown" || v === "none" || v == null) return "—";
+
+      // Stateless / fire-and-forget entities: the .state field is either a
+      // timestamp (scene) or unhelpful (button). Show the action verb so
+      // the user knows what tapping does, not when it last did it.
+      if (dom === "scene") return "ACTIVATE";
+      if (dom === "button" || dom === "input_button") return "PRESS";
+      if (dom === "script") return v === "on" ? "RUNNING" : "RUN";
+
       if (dom === "binary_sensor" && DOOR_LIKE.has(dc)) return v === "on" ? "OPEN" : "CLOSED";
       if (dom === "cover") return v.toUpperCase();
+      // Group entities (legacy group.* and Light Group helpers via light.*)
+      // report on/off normally — caught by the next branch.
       if (v === "on" || v === "off") return v.toUpperCase();
       const unit = s.attributes?.unit_of_measurement;
       return unit ? `${v} ${unit}` : v;
+    }
+
+    // Map an entity's domain to the natural service+verb its tap should
+    // fire. Anything not listed falls through to homeassistant.toggle,
+    // which covers light/switch/input_boolean/fan/climate/etc.
+    function defaultServiceFor(entity_id) {
+      const dom = entity_id.split(".")[0];
+      switch (dom) {
+        case "scene":        return ["scene", "turn_on"];
+        case "script":       return ["script", "turn_on"];
+        case "button":       return ["button", "press"];
+        case "input_button": return ["input_button", "press"];
+        case "automation":   return ["automation", "trigger"];
+        case "cover":        return ["cover", "toggle"];
+        default:             return ["homeassistant", "toggle"];
+      }
     }
 
     function renderTabs() {
@@ -639,7 +665,8 @@
         if (parts.length !== 2) return;
         callService(parts[0], parts[1], item.target ?? null);
       } else if (item.entity_id) {
-        callService("homeassistant", "toggle", item.entity_id);
+        const [d, s] = defaultServiceFor(item.entity_id);
+        callService(d, s, item.entity_id);
       }
     }
 
