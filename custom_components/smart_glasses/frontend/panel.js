@@ -265,6 +265,19 @@ class SmartGlassesPanel extends HTMLElement {
     }
   }
 
+  async _approveRow(code, sessionId) {
+    // One-click approval direct from a pairing row. Skips the
+    // type-the-code-and-look-it-up dance; we already have both bits.
+    try {
+      await this._api("POST", "/pair/approve", { code, session_id: sessionId });
+      this._showToast(`Approved ${code}`);
+      await this._loadAll();
+    } catch (err) {
+      this._error = err.message;
+      this._render();
+    }
+  }
+
   // ---- rendering ----------------------------------------------------------
 
   _allEntities() {
@@ -653,7 +666,10 @@ class SmartGlassesPanel extends HTMLElement {
                       <span class="pair-code">${esc(p.code)}</span>
                       <span class="pill">${p.approved ? "approved" : "pending"}</span>
                     </div>
-                    <button class="danger" data-action="revoke" data-session="${esc(p.session_id)}">Revoke</button>
+                    <div style="display:flex; gap:8px;">
+                      ${p.approved ? "" : `<button data-action="approve-row" data-code="${esc(p.code)}" data-session="${esc(p.session_id)}">Approve</button>`}
+                      <button class="danger" data-action="revoke" data-session="${esc(p.session_id)}">Revoke</button>
+                    </div>
                   </div>
                 `).join("")
             }
@@ -798,6 +814,8 @@ class SmartGlassesPanel extends HTMLElement {
           this._approveCode = el.value.toUpperCase();
         } else if (action === "approve") {
           if (this._approveCode) this._approve(this._approveCode);
+        } else if (action === "approve-row") {
+          this._approveRow(el.dataset.code, el.dataset.session);
         } else if (action === "revoke") {
           if (confirm("Revoke this pairing? The glasses will lose access.")) {
             this._revoke(el.dataset.session);
