@@ -405,31 +405,31 @@ class SmartGlassesPanel extends HTMLElement {
           
           <h3 style="margin-top: 24px; font-size: 16px;">Items (${currentCard.items.length}/${MAX_ENTITIES})</h3>
           ${currentCard.items.length === 0
-            ? \`<div class="meta">No items on this card.</div>\`
+            ? `<div class="meta">No items on this card.</div>`
             : currentCard.items.map((item, idx) => {
                 if (item.type === 'entity') {
                   const s = this._hass.states[item.entity_id];
                   const name = s?.attributes.friendly_name || item.entity_id;
-                  const state = s ? \`\${s.state}\${s.attributes.unit_of_measurement ? " " + s.attributes.unit_of_measurement : ""}\` : "—";
-                  return \`
+                  const state = s ? `${s.state}${s.attributes.unit_of_measurement ? " " + s.attributes.unit_of_measurement : ""}` : "—";
+                  return `
                     <div class="selected-row">
                       <div>
-                        <div class="entity-name">\${name}</div>
-                        <div class="entity-id">\${item.entity_id} · <span style="color:var(--primary-text-color)">\${state}</span></div>
+                        <div class="entity-name">${name}</div>
+                        <div class="entity-id">${item.entity_id} · <span style="color:var(--primary-text-color)">${state}</span></div>
                       </div>
-                      <button class="secondary" data-action="remove-item" data-index="\${idx}">Remove</button>
+                      <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
                     </div>
-                  \`;
+                  `;
                 } else if (item.type === 'action') {
-                  return \`
+                  return `
                     <div class="selected-row">
                       <div>
-                        <div class="entity-name">\${item.name}</div>
-                        <div class="entity-id">\${item.action}\${item.target ? \` · \${item.target}\` : ''} <span class="pill" style="margin-left: 4px; background: rgba(3, 169, 244, 0.2); color: #03a9f4;">action</span></div>
+                        <div class="entity-name">${item.name}</div>
+                        <div class="entity-id">${item.action}${item.target ? ` · ${item.target}` : ''} <span class="pill" style="margin-left: 4px; background: rgba(3, 169, 244, 0.2); color: #03a9f4;">action</span></div>
                       </div>
-                      <button class="secondary" data-action="remove-item" data-index="\${idx}">Remove</button>
+                      <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
                     </div>
-                  \`;
+                  `;
                 }
               }).join("")
           }
@@ -448,18 +448,18 @@ class SmartGlassesPanel extends HTMLElement {
           <input type="text" placeholder="Search by name or entity_id…" data-action="search" value="${this._search}">
           <div class="entity-list">
             ${matching.length === 0
-              ? \`<div class="entity" style="cursor:default;">No matches.</div>\`
+              ? `<div class="entity" style="cursor:default;">No matches.</div>`
               : matching.map((s) => {
                   const onCard = currentCard.items.some(i => i.type === 'entity' && i.entity_id === s.entity_id);
-                  return \`
-                  <div class="entity \${onCard ? "selected" : ""}" data-action="toggle" data-entity="\${s.entity_id}">
+                  return `
+                  <div class="entity ${onCard ? "selected" : ""}" data-action="toggle" data-entity="${s.entity_id}">
                     <div>
-                      <div class="entity-name">\${s.attributes.friendly_name || s.entity_id}</div>
-                      <div class="entity-id">\${s.entity_id} · \${s.state}</div>
+                      <div class="entity-name">${s.attributes.friendly_name || s.entity_id}</div>
+                      <div class="entity-id">${s.entity_id} · ${s.state}</div>
                     </div>
-                    <div>\${onCard ? "✓" : ""}</div>
+                    <div>${onCard ? "✓" : ""}</div>
                   </div>
-                \`}).join("")
+                `}).join("")
             }
           </div>
         </div>
