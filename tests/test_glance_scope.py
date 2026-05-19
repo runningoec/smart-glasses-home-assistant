@@ -8,6 +8,7 @@ anything outside that scope, even with a valid token.
 from __future__ import annotations
 
 import pytest
+from homeassistant.core import ServiceCall, callback
 
 
 async def _pair_and_get_token(hass_client_no_auth, hass_client) -> str:
@@ -62,6 +63,15 @@ async def test_call_service_allowed_when_action_pinned_to_card(
     # Need a state to exist so the validator passes — set one.
     hass.states.async_set("light.kitchen", "off")
 
+    seen_calls: list[ServiceCall] = []
+
+    @callback
+    def _handle_turn_off(call: ServiceCall) -> None:
+        seen_calls.append(call)
+
+    hass.services.async_register("light", "turn_off", _handle_turn_off)
+    await hass.async_block_till_done()
+
     cards = [{
         "id": "c", "name": "C",
         "items": [{
@@ -82,6 +92,9 @@ async def test_call_service_allowed_when_action_pinned_to_card(
         json={"domain": "light", "service": "turn_off", "target": {"entity_id": "light.kitchen"}},
     )
     assert ok.status == 200, await ok.text()
+    await hass.async_block_till_done()
+    assert len(seen_calls) == 1
+    assert seen_calls[0].data.get("entity_id") == "light.kitchen"
 
     # Rejected: same service, different target.
     bad = await glasses.post(

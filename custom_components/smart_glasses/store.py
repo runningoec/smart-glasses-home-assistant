@@ -85,7 +85,7 @@ class SmartGlassesStore:
                         {
                             "id": "card_0",
                             "name": "Main",
-                            "items": [{"type": "entity", "entity_id": e} for e in entities]
+                            "items": [{"type": "entity", "entity_id": e} for e in entities],
                         }
                     ]
                 else:
@@ -116,7 +116,8 @@ class SmartGlassesStore:
         we've already done on the next start.
         """
         legacy = [
-            (sid, p) for sid, p in self._data["pairings"].items()
+            (sid, p)
+            for sid, p in self._data["pairings"].items()
             if "refresh_id" in p or "token" in p
         ]
         if not legacy:
@@ -158,7 +159,9 @@ class SmartGlassesStore:
                     _redact(sid),
                 )
         _LOGGER.info(
-            "smart_glasses: migrated %d/%d legacy pairing(s)", migrated, len(legacy),
+            "smart_glasses: migrated %d/%d legacy pairing(s)",
+            migrated,
+            len(legacy),
         )
 
     async def async_save(self) -> None:

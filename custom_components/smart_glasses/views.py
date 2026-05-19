@@ -36,7 +36,6 @@ import json
 import logging
 import re
 import secrets
-import string
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -77,19 +76,23 @@ MAX_BODY_BYTES = 64 * 1024
 # These are system-control operations whose blast radius is the whole HA
 # install — putting them on a card by mistake is something we should refuse
 # to honour, even though the proxy is otherwise scope-limited.
-_BLOCKED_SERVICES: frozenset[str] = frozenset({
-    "homeassistant.restart",
-    "homeassistant.stop",
-    "homeassistant.reload_all",
-    "homeassistant.reload_core_config",
-    "recorder.purge",
-    "recorder.purge_entities",
-    "system_log.clear",
-})
-_BLOCKED_DOMAINS: frozenset[str] = frozenset({
-    "hassio",          # supervisor reboot/shutdown/update
-    "shell_command",   # arbitrary shell on the host
-})
+_BLOCKED_SERVICES: frozenset[str] = frozenset(
+    {
+        "homeassistant.restart",
+        "homeassistant.stop",
+        "homeassistant.reload_all",
+        "homeassistant.reload_core_config",
+        "recorder.purge",
+        "recorder.purge_entities",
+        "system_log.clear",
+    }
+)
+_BLOCKED_DOMAINS: frozenset[str] = frozenset(
+    {
+        "hassio",  # supervisor reboot/shutdown/update
+        "shell_command",  # arbitrary shell on the host
+    }
+)
 
 
 def _service_blocked(domain: str, service: str) -> bool:
@@ -102,20 +105,20 @@ def _service_blocked(domain: str, service: str) -> bool:
 # buttons get press, etc. The generic ``homeassistant.toggle`` is also
 # allowed everywhere for legacy compatibility.
 _DOMAIN_TOGGLE_SERVICES: dict[str, frozenset[str]] = {
-    "light":         frozenset({"toggle", "turn_on", "turn_off"}),
-    "switch":        frozenset({"toggle", "turn_on", "turn_off"}),
-    "fan":           frozenset({"toggle", "turn_on", "turn_off"}),
+    "light": frozenset({"toggle", "turn_on", "turn_off"}),
+    "switch": frozenset({"toggle", "turn_on", "turn_off"}),
+    "fan": frozenset({"toggle", "turn_on", "turn_off"}),
     "input_boolean": frozenset({"toggle", "turn_on", "turn_off"}),
-    "climate":       frozenset({"toggle", "turn_on", "turn_off"}),
-    "media_player":  frozenset({"toggle", "turn_on", "turn_off", "media_play_pause"}),
-    "cover":         frozenset({"toggle", "open_cover", "close_cover"}),
-    "scene":         frozenset({"turn_on"}),
-    "script":        frozenset({"turn_on", "toggle"}),
-    "automation":    frozenset({"trigger", "toggle", "turn_on", "turn_off"}),
-    "button":        frozenset({"press"}),
-    "input_button":  frozenset({"press"}),
-    "lock":          frozenset({"lock", "unlock"}),
-    "group":         frozenset({"toggle", "turn_on", "turn_off"}),
+    "climate": frozenset({"toggle", "turn_on", "turn_off"}),
+    "media_player": frozenset({"toggle", "turn_on", "turn_off", "media_play_pause"}),
+    "cover": frozenset({"toggle", "open_cover", "close_cover"}),
+    "scene": frozenset({"turn_on"}),
+    "script": frozenset({"turn_on", "toggle"}),
+    "automation": frozenset({"trigger", "toggle", "turn_on", "turn_off"}),
+    "button": frozenset({"press"}),
+    "input_button": frozenset({"press"}),
+    "lock": frozenset({"lock", "unlock"}),
+    "group": frozenset({"toggle", "turn_on", "turn_off"}),
 }
 
 
@@ -142,9 +145,7 @@ def _csrf_guard(request: web.Request) -> bool:
     return bool(host) and origin_host == host
 
 
-async def _read_body_capped(
-    request: web.Request, max_bytes: int = MAX_BODY_BYTES
-) -> bytes | None:
+async def _read_body_capped(request: web.Request, max_bytes: int = MAX_BODY_BYTES) -> bytes | None:
     """Read the request body up to ``max_bytes``. Returns the bytes on
     success, or None if the body exceeds the cap (caller should 413).
     Honours the declared Content-Length when present so we never start
@@ -169,32 +170,36 @@ def _store(hass: HomeAssistant) -> SmartGlassesStore:
 # Sliding-window per-IP rate limit on /pair/start. In-memory; resets on HA
 # restart. Sized for legitimate users (a few starts per minute at most) while
 # making spam unprofitable.
-_RATE_LIMIT_PAIR_START: dict[str, list[float]] = {}
 _RATE_LIMIT_WINDOW_SEC = 60.0
 
-# Last token-poll time per session_id. Updated by PairTokenView; used by
-# _prune_inactive_pairings to detect abandoned tabs/glasses and drop their
-# pending entries from the panel. In-memory only — survivors after HA
-# restart will get re-populated as soon as a real client polls.
-_LAST_POLL: dict[str, float] = {}
+
+def _pair_start_rate_limit(hass: HomeAssistant) -> dict[str, list[float]]:
+    """Per-hass in-memory rate limit buckets for /pair/start."""
+    return hass.data[DOMAIN].setdefault("pair_start_rate_limit", {})
 
 
-async def _prune_inactive_pairings(store) -> int:
+def _last_poll_times(hass: HomeAssistant) -> dict[str, float]:
+    """Per-hass in-memory token poll timestamps keyed by session id."""
+    return hass.data[DOMAIN].setdefault("last_poll", {})
+
+
+async def _prune_inactive_pairings(hass: HomeAssistant, store) -> int:
     """Remove pending pairings that have gone quiet — either never polled
     within the inactivity window, or hit the hard TTL backstop. Returns the
     number removed (mostly for tests + logging)."""
     now = time.time()
     removed = 0
+    last_poll_times = _last_poll_times(hass)
     for sid, p in list(store.pairings.items()):
         if p.get("approved_at") is not None:
             continue
         created = p.get("created_at", 0)
-        last_poll = _LAST_POLL.get(sid, created)
+        last_poll = last_poll_times.get(sid, created)
         # A live tab polls every couple of seconds. If we haven't heard from
         # it in PAIRING_INACTIVE_SECONDS, treat the pairing as dead.
         if now - last_poll > PAIRING_INACTIVE_SECONDS:
             await store.async_delete_pairing(sid)
-            _LAST_POLL.pop(sid, None)
+            last_poll_times.pop(sid, None)
             removed += 1
             continue
         # Backstop: very old pairings get pruned even if something is
@@ -202,28 +207,29 @@ async def _prune_inactive_pairings(store) -> int:
         # holding a slot forever.
         if now - created > PAIRING_TTL_SECONDS:
             await store.async_delete_pairing(sid)
-            _LAST_POLL.pop(sid, None)
+            last_poll_times.pop(sid, None)
             removed += 1
     return removed
 
 
-def _rate_limit_check(ip: str) -> bool:
+def _rate_limit_check(hass: HomeAssistant, ip: str) -> bool:
     """Return True if the request from this IP is within the budget.
 
     The dict only stores timestamps inside the current 60-second window, so
     memory stays bounded as long as the host of IPs hitting us is finite.
     """
     now = time.time()
-    recent = [t for t in _RATE_LIMIT_PAIR_START.get(ip, []) if now - t < _RATE_LIMIT_WINDOW_SEC]
+    buckets = _pair_start_rate_limit(hass)
+    recent = [t for t in buckets.get(ip, []) if now - t < _RATE_LIMIT_WINDOW_SEC]
     if len(recent) >= PAIR_START_PER_IP_PER_MIN:
-        _RATE_LIMIT_PAIR_START[ip] = recent
+        buckets[ip] = recent
         return False
     recent.append(now)
-    _RATE_LIMIT_PAIR_START[ip] = recent
+    buckets[ip] = recent
     # Opportunistic eviction: every now and then, drop empty IP entries.
-    if len(_RATE_LIMIT_PAIR_START) > 256:
-        for k in [k for k, v in _RATE_LIMIT_PAIR_START.items() if not v]:
-            _RATE_LIMIT_PAIR_START.pop(k, None)
+    if len(buckets) > 256:
+        for k in [k for k, v in buckets.items() if not v]:
+            buckets.pop(k, None)
     return True
 
 
@@ -375,7 +381,7 @@ class PairStartView(HomeAssistantView):
         # Rate-limit before doing any work. Endpoint is unauthenticated and
         # internet-reachable, so a bored attacker could otherwise spam it.
         ip = request.remote or "unknown"
-        if not _rate_limit_check(ip):
+        if not _rate_limit_check(hass, ip):
             return self.json_message(
                 "too many pairing attempts; try again in a minute",
                 status_code=429,
@@ -385,7 +391,7 @@ class PairStartView(HomeAssistantView):
         # new one. This is what keeps the panel's pending list from
         # accumulating stale codes — a tab that stops polling drops off
         # within PAIRING_INACTIVE_SECONDS even if no one calls /pair/start.
-        await _prune_inactive_pairings(store)
+        await _prune_inactive_pairings(hass, store)
 
         # Hard cap on pending sessions across the whole install. Stops a
         # spammer from running us out of disk by hammering /pair/start with
@@ -400,11 +406,13 @@ class PairStartView(HomeAssistantView):
         session_id = secrets.token_urlsafe(18)
         code = _new_code()
         await store.async_create_pairing(session_id, code)
-        return self.json({
-            "session_id": session_id,
-            "code": code,
-            "expires_in": PAIRING_TTL_SECONDS,
-        })
+        return self.json(
+            {
+                "session_id": session_id,
+                "code": code,
+                "expires_in": PAIRING_TTL_SECONDS,
+            }
+        )
 
 
 class PairTokenView(HomeAssistantView):
@@ -429,7 +437,7 @@ class PairTokenView(HomeAssistantView):
         # Liveness ping: any successful poll records the client as active
         # so _prune_inactive_pairings won't kick the pairing while a tab
         # is still alive.
-        _LAST_POLL[session_id] = time.time()
+        _last_poll_times(hass)[session_id] = time.time()
         if not p.get("token_hash"):
             # Still waiting on approval. Include the code so a re-launched
             # glasses app can recover and keep displaying the SAME code
@@ -443,12 +451,14 @@ class PairTokenView(HomeAssistantView):
             )
         # Hand it over exactly once.
         await store.async_clear_pickup(session_id)
-        return self.json({
-            "status": "approved",
-            "token": pickup,
-            "user_id": p["user_id"],
-            "approved_at": p["approved_at"],
-        })
+        return self.json(
+            {
+                "status": "approved",
+                "token": pickup,
+                "user_id": p["user_id"],
+                "approved_at": p["approved_at"],
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -468,19 +478,21 @@ class PairingsListView(HomeAssistantView):
         store = _store(hass)
         # Drop pending pairings whose clients have stopped polling, so the
         # panel only ever shows live ones (plus all approved).
-        await _prune_inactive_pairings(store)
+        await _prune_inactive_pairings(hass, store)
         # Strip the token before returning. The phone-side UI only needs to
         # see WHICH pairings exist + their approval state, never the secret.
         sanitized = []
         for p in store.pairings.values():
-            sanitized.append({
-                "session_id": p["session_id"],
-                "code": p["code"],
-                "approved": bool(p.get("token_hash")),
-                "user_id": p.get("user_id"),
-                "created_at": p["created_at"],
-                "approved_at": p.get("approved_at"),
-            })
+            sanitized.append(
+                {
+                    "session_id": p["session_id"],
+                    "code": p["code"],
+                    "approved": bool(p.get("token_hash")),
+                    "user_id": p.get("user_id"),
+                    "created_at": p["created_at"],
+                    "approved_at": p.get("approved_at"),
+                }
+            )
         return self.json({"pairings": sanitized})
 
 
@@ -546,7 +558,8 @@ class PairApproveView(HomeAssistantView):
             # Surface the real error rather than letting aiohttp swallow it
             # into HA's generic "Server got itself in trouble" 500.
             _LOGGER.exception(
-                "pair_approve failed for session %s", _redact(pairing["session_id"]),
+                "pair_approve failed for session %s",
+                _redact(pairing["session_id"]),
             )
             return self.json_message(
                 f"approve failed: {type(err).__name__}: {err}",
@@ -575,7 +588,7 @@ class PairRevokeView(HomeAssistantView):
             return self.json_message("unknown session", status_code=404)
         had_token = bool(p.get("token_hash"))
         await store.async_delete_pairing(session_id)
-        _LAST_POLL.pop(session_id, None)
+        _last_poll_times(hass).pop(session_id, None)
         user = request["hass_user"]
         await store.async_audit(
             "pair_revoked",
@@ -719,6 +732,106 @@ def _card_entity_ids(cards: list[dict[str, Any]]) -> set[str]:
     return out
 
 
+def _augment_with_group_meta(hass: HomeAssistant, raw: dict[str, Any]) -> dict[str, Any]:
+    """Attach a ``_smart_glasses`` block describing computed group state.
+
+    HA's Light Group helper reports ``unknown`` when any member is
+    unreachable, even if the rest are clearly on. The glasses can't fetch
+    the member states (they're not on the card, so the scoped /states
+    endpoint won't return them), so we precompute here:
+
+      * count reachable members that are on vs off
+      * derive ``"on"`` if on_count ≥ off_count among the reachable set
+        (a tie leans on — what most users mean by 'the room is on')
+      * ``None`` only when *zero* members are reachable
+
+    The block is namespaced under ``_smart_glasses`` so it can't be
+    confused with anything HA might add to its own state dict.
+    """
+    attrs = raw.get("attributes") or {}
+    members = attrs.get("entity_id")
+    if not (raw["entity_id"].startswith("light.") and isinstance(members, list)):
+        return raw
+
+    on_count = off_count = unreachable = 0
+    for m in members:
+        ms = hass.states.get(m)
+        if ms is None or ms.state in ("unavailable", "unknown", "none"):
+            unreachable += 1
+        elif ms.state == "on":
+            on_count += 1
+        elif ms.state == "off":
+            off_count += 1
+        elif ms.attributes.get("brightness"):
+            # Some integrations leave state in a weird value but expose
+            # brightness; treat non-zero brightness as on.
+            on_count += 1
+        else:
+            off_count += 1
+
+    reachable = on_count + off_count
+    derived = None if reachable == 0 else ("on" if on_count >= off_count else "off")
+    augmented = dict(raw)
+    augmented["_smart_glasses"] = {
+        "is_group": True,
+        "members": len(members),
+        "on": on_count,
+        "off": off_count,
+        "unreachable": unreachable,
+        "derived_state": derived,
+    }
+    return augmented
+
+
+def _glance_state_payloads_for_change(
+    hass: HomeAssistant,
+    cards: list[dict[str, Any]],
+    entity_id: str | None,
+    new_state: Any,
+) -> list[dict[str, Any]]:
+    """Build glance websocket payloads for one HA state_changed event.
+
+    A changed entity can require more than one outbound update: if a member
+    light changes and a light-group helper that contains it is also pinned to
+    a card, the glasses need both the member's new state and the group's
+    freshly-derived aggregate state.
+    """
+    if not entity_id:
+        return []
+
+    wanted = _card_entity_ids(cards)
+    payloads: list[dict[str, Any]] = []
+
+    if entity_id in wanted:
+        payloads.append(
+            {
+                "type": "state_changed",
+                "entity_id": entity_id,
+                "new_state": _augment_with_group_meta(hass, new_state.as_dict())
+                if new_state
+                else None,
+            }
+        )
+
+    for group_eid in wanted:
+        if not group_eid.startswith("light."):
+            continue
+        group = hass.states.get(group_eid)
+        if not group:
+            continue
+        members = group.attributes.get("entity_id")
+        if isinstance(members, list) and entity_id in members:
+            payloads.append(
+                {
+                    "type": "state_changed",
+                    "entity_id": group_eid,
+                    "new_state": _augment_with_group_meta(hass, group.as_dict()),
+                }
+            )
+
+    return payloads
+
+
 def _service_call_allowed(
     cards: list[dict[str, Any]], domain: str, service: str, target_eid: str | None
 ) -> bool:
@@ -756,9 +869,8 @@ def _service_call_allowed(
                 if service_str == "homeassistant.toggle":
                     return True
                 entity_domain = target_eid.split(".")[0] if target_eid else ""
-                if (
-                    domain == entity_domain
-                    and service in _DOMAIN_TOGGLE_SERVICES.get(entity_domain, frozenset())
+                if domain == entity_domain and service in _DOMAIN_TOGGLE_SERVICES.get(
+                    entity_domain, frozenset()
                 ):
                     return True
     return False
@@ -797,7 +909,7 @@ class GlanceStatesView(HomeAssistantView):
         for eid in wanted:
             s = hass.states.get(eid)
             if s:
-                out.append(s.as_dict())
+                out.append(_augment_with_group_meta(hass, s.as_dict()))
         return self.json(out)
 
 
@@ -890,17 +1002,14 @@ class GlanceWebSocketView(HomeAssistantView):
 
         @callback
         def state_listener(event):
-            eid = event.data.get("entity_id")
-            wanted = _card_entity_ids(_store(hass).cards)
-            if eid not in wanted:
-                return
-            new_state = event.data.get("new_state")
-            payload = {
-                "type": "state_changed",
-                "entity_id": eid,
-                "new_state": new_state.as_dict() if new_state else None,
-            }
-            hass.async_create_task(ws.send_json(payload))
+            payloads = _glance_state_payloads_for_change(
+                hass,
+                _store(hass).cards,
+                event.data.get("entity_id"),
+                event.data.get("new_state"),
+            )
+            for payload in payloads:
+                hass.async_create_task(ws.send_json(payload))
 
         remove = hass.bus.async_listen("state_changed", state_listener)
         try:

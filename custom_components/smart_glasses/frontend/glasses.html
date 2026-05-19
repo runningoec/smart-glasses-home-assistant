@@ -484,6 +484,20 @@
       const v = s.state;
       const dom = s.entity_id.split(".")[0];
       const dc = s.attributes?.device_class;
+
+      // Light-group fallback: HA reports "unknown" when any member is
+      // unreachable, even if the rest are clearly on. The server attaches
+      // a _smart_glasses block with a derived state computed from
+      // reachable members (ties go to ON, what most people mean by
+      // "the room is on"). Use it when HA's own state is unhelpful.
+      const sg = s._smart_glasses;
+      if (sg?.is_group && sg.derived_state &&
+          (v === "unknown" || v === "unavailable" || v === "none" || v == null)) {
+        const verb = sg.derived_state.toUpperCase();
+        const reachable = sg.on + sg.off;
+        return reachable < sg.members ? `${verb} ${sg.on}/${sg.members}` : verb;
+      }
+
       if (v === "unavailable" || v === "unknown" || v === "none" || v == null) return "—";
 
       // Stateless / fire-and-forget entities: the .state field is either a
@@ -561,9 +575,15 @@
           const eid = item.entity_id;
           const s = states.get(eid);
           const name = s?.attributes?.friendly_name || eid;
-          const stale = !s || s.state === "unavailable" || s.state === "unknown";
-          const onAttr = s?.state === "on" || s?.state === "open" ? "true"
-                      : s?.state === "off" || s?.state === "closed" ? "false"
+          // Effective state for color + stale flag: the server-derived
+          // group state when available, otherwise HA's reported state.
+          const derived = s?._smart_glasses?.derived_state;
+          const effective = derived ?? s?.state;
+          const stale = !s || (
+            (s.state === "unavailable" || s.state === "unknown") && !derived
+          );
+          const onAttr = effective === "on" || effective === "open" ? "true"
+                      : effective === "off" || effective === "closed" ? "false"
                       : "unset";
           return `
             <div class="cell${focused}${armedCls}" data-idx="${idx}" data-type="entity" data-eid="${esc(eid)}" data-on="${onAttr}" data-stale="${stale}">
