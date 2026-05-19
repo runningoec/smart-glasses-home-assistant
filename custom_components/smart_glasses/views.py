@@ -53,6 +53,7 @@ from .const import (
     MAX_PENDING_PAIRINGS,
     PAIR_START_PER_IP_PER_MIN,
     PAIRING_CODE_LENGTH,
+    PAIRING_INACTIVE_SECONDS,
     PAIRING_TTL_SECONDS,
     PANEL_JS_PATH,
     PANEL_JS_ROUTE,
@@ -78,6 +79,40 @@ def _store(hass: HomeAssistant) -> SmartGlassesStore:
 # making spam unprofitable.
 _RATE_LIMIT_PAIR_START: dict[str, list[float]] = {}
 _RATE_LIMIT_WINDOW_SEC = 60.0
+
+# Last token-poll time per session_id. Updated by PairTokenView; used by
+# _prune_inactive_pairings to detect abandoned tabs/glasses and drop their
+# pending entries from the panel. In-memory only — survivors after HA
+# restart will get re-populated as soon as a real client polls.
+_LAST_POLL: dict[str, float] = {}
+
+
+async def _prune_inactive_pairings(store) -> int:
+    """Remove pending pairings that have gone quiet — either never polled
+    within the inactivity window, or hit the hard TTL backstop. Returns the
+    number removed (mostly for tests + logging)."""
+    now = time.time()
+    removed = 0
+    for sid, p in list(store.pairings.items()):
+        if p.get("approved_at") is not None:
+            continue
+        created = p.get("created_at", 0)
+        last_poll = _LAST_POLL.get(sid, created)
+        # A live tab polls every couple of seconds. If we haven't heard from
+        # it in PAIRING_INACTIVE_SECONDS, treat the pairing as dead.
+        if now - last_poll > PAIRING_INACTIVE_SECONDS:
+            await store.async_delete_pairing(sid)
+            _LAST_POLL.pop(sid, None)
+            removed += 1
+            continue
+        # Backstop: very old pairings get pruned even if something is
+        # weirdly still polling. Stops a malicious/bugged client from
+        # holding a slot forever.
+        if now - created > PAIRING_TTL_SECONDS:
+            await store.async_delete_pairing(sid)
+            _LAST_POLL.pop(sid, None)
+            removed += 1
+    return removed
 
 
 def _rate_limit_check(ip: str) -> bool:
@@ -204,12 +239,11 @@ class PairStartView(HomeAssistantView):
                 status_code=429,
             )
 
-        # Prune any expired-and-unapproved sessions so the user doesn't
-        # accumulate dead pairings just by leaving the app open. Approved
-        # pairings stay forever (revoke via panel) — only expire unapproved.
-        for sid, p in list(store.pairings.items()):
-            if p["approved_at"] is None and time.time() - p["created_at"] > PAIRING_TTL_SECONDS:
-                await store.async_delete_pairing(sid)
+        # Prune any abandoned-or-expired pending sessions before adding a
+        # new one. This is what keeps the panel's pending list from
+        # accumulating stale codes — a tab that stops polling drops off
+        # within PAIRING_INACTIVE_SECONDS even if no one calls /pair/start.
+        await _prune_inactive_pairings(store)
 
         # Hard cap on pending sessions across the whole install. Stops a
         # spammer from running us out of disk by hammering /pair/start with
@@ -250,6 +284,10 @@ class PairTokenView(HomeAssistantView):
         p = store.get_pairing(session_id)
         if not p:
             return self.json_message("unknown session", status_code=404)
+        # Liveness ping: any successful poll records the client as active
+        # so _prune_inactive_pairings won't kick the pairing while a tab
+        # is still alive.
+        _LAST_POLL[session_id] = time.time()
         if not p.get("token_hash"):
             # Still waiting on approval. Include the code so a re-launched
             # glasses app can recover and keep displaying the SAME code
@@ -285,10 +323,14 @@ class PairingsListView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
+        store = _store(hass)
+        # Drop pending pairings whose clients have stopped polling, so the
+        # panel only ever shows live ones (plus all approved).
+        await _prune_inactive_pairings(store)
         # Strip the token before returning. The phone-side UI only needs to
         # see WHICH pairings exist + their approval state, never the secret.
         sanitized = []
-        for p in _store(hass).pairings.values():
+        for p in store.pairings.values():
             sanitized.append({
                 "session_id": p["session_id"],
                 "code": p["code"],
@@ -379,6 +421,7 @@ class PairRevokeView(HomeAssistantView):
             return self.json_message("unknown session", status_code=404)
         had_token = bool(p.get("token_hash"))
         await store.async_delete_pairing(session_id)
+        _LAST_POLL.pop(session_id, None)
         user = request["hass_user"]
         await store.async_audit(
             "pair_revoked",

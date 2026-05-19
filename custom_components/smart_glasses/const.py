@@ -33,9 +33,15 @@ MAX_ENTITIES = 8
 # Length of the human-readable pairing code shown on the glasses.
 PAIRING_CODE_LENGTH = 6
 
-# Window during which an unapproved pairing remains usable, before the glasses
-# must request a new code.
+# Hard upper bound on how long an unapproved pairing can live, regardless of
+# polling activity. Backstop in case a polling client misbehaves.
 PAIRING_TTL_SECONDS = 300
+
+# Time without a token-poll after which a pending pairing is considered
+# abandoned and gets auto-pruned from the list. The glasses Web App polls
+# every POLL_PAIR_MS (2s) so anything past ~30s means the tab/glasses
+# closed and the pairing is dead from the user's POV.
+PAIRING_INACTIVE_SECONDS = 30
 
 # Cap on unapproved pairing sessions across the whole install. A bad actor
 # hitting /pair/start in a loop can't blow up storage past this.
