@@ -27,6 +27,7 @@ Each pairing dict:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import time
 from typing import Any
@@ -180,12 +181,15 @@ class SmartGlassesStore:
             await self.async_save()
 
     def find_pairing_by_token(self, token: str) -> dict[str, Any] | None:
-        """Look up a pairing by Bearer token — used on every glasses-API call."""
+        """Look up a pairing by Bearer token — used on every glasses-API call.
+        Uses hmac.compare_digest for the hash comparison so timing doesn't
+        leak which (if any) pairing matched."""
         if not token:
             return None
         h = hash_token(token)
         for p in self._data["pairings"].values():
-            if p.get("token_hash") == h:
+            stored = p.get("token_hash")
+            if stored and hmac.compare_digest(stored, h):
                 return p
         return None
 

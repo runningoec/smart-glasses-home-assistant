@@ -106,6 +106,20 @@ HA's native `/api/*` — every call goes through scope-limited proxies:
 Revoking from the panel deletes the hash. The next glasses-side call gets
 401 and re-pair kicks in.
 
+### Reverse-proxy caveat
+
+`POST /api/smart_glasses/pair/start` is rate-limited at 6 requests/min
+**per source IP**. If your HA sits behind a reverse proxy (Cloudflare
+Tunnel, Nabu Casa, Traefik, …) without `use_x_forwarded_for: true` in
+your HA HTTP config, every request will look like it's coming from the
+proxy's IP — so the per-IP limit collapses to a single global bucket
+covering *all* clients. The hard cap of **50 pending pairings** (auto-
+pruned after 30s of inactivity) is the real backstop in that case;
+worst-case spam is ~50 records and ~10 KB on disk that evaporates
+seconds later. Not catastrophic, but if you want per-client rate
+limiting, enable `use_x_forwarded_for` and list your proxy under
+`trusted_proxies` in HA's `http:` config.
+
 ## Status
 
 - v1: read-only adaptive grid of 1–8 entities. Live websocket updates.

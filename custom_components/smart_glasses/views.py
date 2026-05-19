@@ -38,6 +38,7 @@ import secrets
 import string
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 from aiohttp import web
@@ -64,6 +65,72 @@ _LOGGER = logging.getLogger(__name__)
 
 # Excludes ambiguous characters that look alike on small displays (O/0, I/1).
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+# Hard upper bound on incoming JSON/YAML bodies, applied per mutating
+# endpoint before we read anything into memory. 64 KiB is comfortably
+# larger than the worst plausible cards.yaml (8 cards × 8 items × ~200 chars).
+MAX_BODY_BYTES = 64 * 1024
+
+# Services we refuse to proxy from the glasses regardless of card config.
+# These are system-control operations whose blast radius is the whole HA
+# install — putting them on a card by mistake is something we should refuse
+# to honour, even though the proxy is otherwise scope-limited.
+_BLOCKED_SERVICES: frozenset[str] = frozenset({
+    "homeassistant.restart",
+    "homeassistant.stop",
+    "homeassistant.reload_all",
+    "homeassistant.reload_core_config",
+    "recorder.purge",
+    "recorder.purge_entities",
+    "system_log.clear",
+})
+_BLOCKED_DOMAINS: frozenset[str] = frozenset({
+    "hassio",          # supervisor reboot/shutdown/update
+    "shell_command",   # arbitrary shell on the host
+})
+
+
+def _service_blocked(domain: str, service: str) -> bool:
+    return domain in _BLOCKED_DOMAINS or f"{domain}.{service}" in _BLOCKED_SERVICES
+
+
+def _csrf_guard(request: web.Request) -> bool:
+    """Return True iff the request is plausibly same-origin (safe to honour).
+
+    Modern browsers attach ``Sec-Fetch-Site`` to every fetch/XHR; we honour
+    same-origin/same-site and reject cross-site. Older browsers (no
+    Sec-Fetch-Site) fall back to comparing ``Origin`` against ``Host``.
+    Requests with neither header (curl, scripts, integrations) are allowed
+    — they're not subject to browser-driven CSRF.
+    """
+    site = request.headers.get("Sec-Fetch-Site", "")
+    if site:
+        return site in ("same-origin", "same-site", "none")
+    origin = request.headers.get("Origin")
+    if origin is None:
+        return True
+    host = (request.headers.get("Host") or "").lower()
+    try:
+        origin_host = urlparse(origin).netloc.lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(host) and origin_host == host
+
+
+async def _read_body_capped(
+    request: web.Request, max_bytes: int = MAX_BODY_BYTES
+) -> bytes | None:
+    """Read the request body up to ``max_bytes``. Returns the bytes on
+    success, or None if the body exceeds the cap (caller should 413).
+    Honours the declared Content-Length when present so we never start
+    reading a multi-megabyte body just to reject it."""
+    declared = request.content_length
+    if declared is not None and declared > max_bytes:
+        return None
+    body = await request.content.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        return None
+    return body
 
 
 def _new_code() -> str:
@@ -354,7 +421,15 @@ class PairApproveView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        body = await request.json()
+        if not _csrf_guard(request):
+            return self.json_message("cross-site request rejected", status_code=403)
+        raw = await _read_body_capped(request, max_bytes=4096)
+        if raw is None:
+            return self.json_message("body too large", status_code=413)
+        try:
+            body = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return self.json_message("invalid json", status_code=400)
         code = (body.get("code") or "").upper().strip()
         session_id = (body.get("session_id") or "").strip()
         if not code:
@@ -414,6 +489,8 @@ class PairRevokeView(HomeAssistantView):
     requires_auth = True
 
     async def delete(self, request: web.Request, session_id: str) -> web.Response:
+        if not _csrf_guard(request):
+            return self.json_message("cross-site request rejected", status_code=403)
         hass: HomeAssistant = request.app["hass"]
         store = _store(hass)
         p = store.get_pairing(session_id)
@@ -451,7 +528,15 @@ class CardsView(HomeAssistantView):
 
     async def put(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        body: dict[str, Any] = await request.json()
+        if not _csrf_guard(request):
+            return self.json_message("cross-site request rejected", status_code=403)
+        raw = await _read_body_capped(request)
+        if raw is None:
+            return self.json_message("body too large", status_code=413)
+        try:
+            body: dict[str, Any] = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return self.json_message("invalid json", status_code=400)
         cards = body.get("cards")
         err = _validate_cards(hass, cards)
         if err is not None:
@@ -497,7 +582,15 @@ class CardsYamlView(HomeAssistantView):
 
     async def put(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        text = await request.text()
+        if not _csrf_guard(request):
+            return self.json_message("cross-site request rejected", status_code=403)
+        raw = await _read_body_capped(request)
+        if raw is None:
+            return self.json_message("body too large", status_code=413)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return self.json_message("body must be utf-8", status_code=400)
         try:
             parsed = yaml.safe_load(text)
         except yaml.YAMLError as err:
@@ -565,6 +658,11 @@ def _service_call_allowed(
     """
     if not domain or not service:
         return False
+    # Hard blocklist: even if an admin added a system-control service to a
+    # card, refuse to fire it from the glasses. Cards are vetted, but a
+    # leaked token + a one-time misconfig shouldn't be able to reboot HA.
+    if _service_blocked(domain, service):
+        return False
     service_str = f"{domain}.{service}"
     for card in cards:
         for item in card.get("items", []):
@@ -629,7 +727,13 @@ class GlanceCallServiceView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _glasses_pairing(request, hass):
             return self.json_message("invalid token", status_code=401)
-        body: dict[str, Any] = await request.json()
+        raw = await _read_body_capped(request, max_bytes=4096)
+        if raw is None:
+            return self.json_message("body too large", status_code=413)
+        try:
+            body: dict[str, Any] = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return self.json_message("invalid json", status_code=400)
         domain = body.get("domain")
         service = body.get("service")
         target = body.get("target") or {}
