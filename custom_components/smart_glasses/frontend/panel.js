@@ -18,9 +18,14 @@ class SmartGlassesPanel extends HTMLElement {
     this._approveCode = "";   // pairings approve-code input
     this._dirtyEntities = false;
     this._loaded = false;
+    this._lastRenderKey = null;       // cheap content hash; skip render if unchanged
+    this._renderCount = 0;
+    this._connectCount = 0;
+    console.log("[smart_glasses] panel constructor");
   }
 
   set hass(hass) {
+    if (!hass) return;       // ignore null/undefined setter calls
     this._hass = hass;
     if (!this._loaded) {
       this._loaded = true;
@@ -38,7 +43,13 @@ class SmartGlassesPanel extends HTMLElement {
   set panel(panel) { this._panel = panel; }
 
   connectedCallback() {
+    this._connectCount++;
+    console.log("[smart_glasses] connectedCallback #" + this._connectCount);
     this._render();
+  }
+
+  disconnectedCallback() {
+    console.log("[smart_glasses] disconnectedCallback");
   }
 
   // ---- networking ---------------------------------------------------------
@@ -136,9 +147,30 @@ class SmartGlassesPanel extends HTMLElement {
   }
 
   _render() {
+    this._renderCount++;
     if (!this._hass) {
       this.innerHTML = "<p style='padding:24px'>Loading…</p>";
       return;
+    }
+
+    // De-dup: skip the DOM rewrite if the inputs to this render are
+    // unchanged from last time. This is the belt to our suspenders — even
+    // if HA's frontend invokes setters or remounts the panel in a tight
+    // loop, we won't actually rewrite innerHTML unless something changed.
+    const key = JSON.stringify({
+      e: this._entities,
+      p: this._pairings,
+      s: this._search,
+      c: this._approveCode,
+      d: this._dirtyEntities,
+      err: this._error ?? null,
+    });
+    if (key === this._lastRenderKey && this.children.length > 0) {
+      return;
+    }
+    this._lastRenderKey = key;
+    if (this._renderCount <= 10 || this._renderCount % 25 === 0) {
+      console.log("[smart_glasses] _render #" + this._renderCount + " (dom-rewrite)");
     }
 
     // Snapshot what we want to preserve across the upcoming innerHTML wipe.
