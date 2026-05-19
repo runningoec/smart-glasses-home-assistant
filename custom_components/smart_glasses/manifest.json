@@ -1,0 +1,12 @@
+{
+  "domain": "smart_glasses",
+  "name": "Smart Glasses",
+  "version": "0.1.0",
+  "documentation": "https://github.com/runningoec/hacs-smart-glasses",
+  "issue_tracker": "https://github.com/runningoec/hacs-smart-glasses/issues",
+  "codeowners": ["@runningoec"],
+  "config_flow": true,
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "requirements": []
+}
