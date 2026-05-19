@@ -233,6 +233,11 @@ class SmartGlassesPanel extends HTMLElement {
           background: var(--card-background-color, #1c1c1c);
           border-radius: 12px; padding: 20px; margin-bottom: 20px;
           box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,0.2));
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .card:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 6px 12px rgba(0,0,0,0.3);
         }
         h2 { margin: 0 0 8px; font-size: 20px; }
         .meta { color: var(--secondary-text-color); font-size: 14px; margin-bottom: 16px; }
@@ -240,13 +245,19 @@ class SmartGlassesPanel extends HTMLElement {
           width: 100%; padding: 10px 12px; font-size: 16px; box-sizing: border-box;
           background: var(--input-fill-color, #2a2a2a);
           color: var(--primary-text-color); border: 1px solid var(--divider-color, #444);
-          border-radius: 8px;
+          border-radius: 8px; transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        input[type="text"]:focus {
+          outline: none; border-color: var(--primary-color, #03a9f4);
+          box-shadow: 0 0 0 2px rgba(3, 169, 244, 0.2);
         }
         details.setup > summary {
           cursor: pointer; list-style: none; font-size: 20px; font-weight: 600;
           padding: 0 0 4px;
           display: flex; align-items: center; justify-content: space-between;
+          transition: color 0.2s;
         }
+        details.setup > summary:hover { color: var(--primary-color, #03a9f4); }
         details.setup > summary::after { content: "▾"; font-size: 16px; color: var(--secondary-text-color); }
         details.setup[open] > summary::after { content: "▴"; }
         details.setup > summary::-webkit-details-marker { display: none; }
@@ -260,7 +271,9 @@ class SmartGlassesPanel extends HTMLElement {
           flex: 1; padding: 12px 14px; font-family: ui-monospace, "SF Mono", monospace;
           background: var(--secondary-background-color, #2a2a2a); border-radius: 8px;
           overflow-x: auto; white-space: nowrap; user-select: all;
+          transition: background 0.2s;
         }
+        .url-box code:hover { background: var(--hover-background-color, #333); }
         .url-box.placeholder code { color: var(--warning-color, #fc6); }
         .copy-toast {
           display: inline-block; margin-left: 8px; font-size: 12px;
@@ -274,9 +287,10 @@ class SmartGlassesPanel extends HTMLElement {
         .entity {
           display: flex; align-items: center; justify-content: space-between;
           padding: 10px 14px; border-bottom: 1px solid var(--divider-color, #333);
-          cursor: pointer;
+          cursor: pointer; transition: background 0.15s ease;
         }
         .entity:hover { background: var(--secondary-background-color, #2a2a2a); }
+        .entity:active { background: rgba(100, 200, 255, 0.05); }
         .entity:last-child { border-bottom: none; }
         .entity.selected { background: rgba(100, 200, 255, 0.12); }
         .entity-name { flex: 1; }
@@ -284,15 +298,23 @@ class SmartGlassesPanel extends HTMLElement {
         .selected-row {
           display: flex; align-items: center; justify-content: space-between;
           padding: 10px 14px; background: var(--secondary-background-color, #2a2a2a);
-          border-radius: 6px; margin-bottom: 6px;
+          border-radius: 6px; margin-bottom: 6px; transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .selected-row:hover {
+          transform: translateX(4px);
+          box-shadow: -2px 2px 4px rgba(0,0,0,0.1);
         }
         button {
           background: var(--primary-color, #03a9f4); color: white; border: 0;
           padding: 10px 18px; border-radius: 8px; font-size: 14px; cursor: pointer;
+          transition: filter 0.2s, transform 0.1s, background 0.2s;
         }
+        button:hover:not([disabled]) { filter: brightness(1.1); transform: scale(1.02); }
+        button:active:not([disabled]) { transform: scale(0.98); }
         button.danger { background: var(--error-color, #ef5350); }
         button.secondary { background: transparent; color: var(--primary-color, #03a9f4); }
-        button[disabled] { opacity: 0.5; cursor: not-allowed; }
+        button.secondary:hover:not([disabled]) { background: rgba(3, 169, 244, 0.1); }
+        button[disabled] { opacity: 0.5; cursor: not-allowed; transform: none; filter: none; }
         .pair-row {
           display: flex; align-items: center; justify-content: space-between;
           padding: 12px 0; border-bottom: 1px solid var(--divider-color, #333);

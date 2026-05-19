@@ -72,6 +72,12 @@
       justify-content: space-between;
       overflow: hidden;
       min-width: 0;
+      cursor: pointer;
+      transition: background 0.1s, transform 0.1s;
+    }
+    .cell:active {
+      background: rgba(255,255,255,0.15);
+      transform: scale(0.98);
     }
     .cell .name {
       font-size: 18px; font-weight: 600; color: var(--dim);
@@ -371,7 +377,7 @@
                     : s?.state === "off" || s?.state === "closed" ? "false"
                     : "unset";
         return `
-          <div class="cell" data-on="${onAttr}" data-stale="${stale}">
+          <div class="cell" data-eid="${eid}" data-on="${onAttr}" data-stale="${stale}">
             <div class="name">${name}</div>
             <div class="value">${s ? fmtState(s) : "—"}</div>
           </div>
@@ -383,6 +389,21 @@
     function setStatus(txt) {
       $status.textContent = txt || "";
     }
+
+    $grid.addEventListener("click", (evt) => {
+      const cell = evt.target.closest(".cell");
+      if (!cell || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const eid = cell.dataset.eid;
+      if (!eid) return;
+      
+      ws.send(JSON.stringify({
+        id: wsMsgId++,
+        type: "call_service",
+        domain: "homeassistant",
+        service: "toggle",
+        target: { entity_id: eid }
+      }));
+    });
 
     // ----- Bootstrap ------------------------------------------------------
 
