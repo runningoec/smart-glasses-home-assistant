@@ -7,9 +7,15 @@ through — they're not subject to browser-driven CSRF.
 
 from __future__ import annotations
 
+import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from custom_components.smart_glasses.views import _csrf_guard
+
+# pytest-homeassistant-custom-component disables sockets, but the asyncio
+# event loop opens a self-pipe socket as soon as it's instantiated. Allow
+# sockets for this module so even pure-logic tests can run.
+pytestmark = pytest.mark.enable_socket
 
 
 def _req(headers: dict[str, str]):

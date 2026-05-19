@@ -7,7 +7,14 @@ high-blast-radius, so it's the first thing we cover with tests.
 
 from __future__ import annotations
 
+import pytest
+
 from custom_components.smart_glasses.views import _service_call_allowed
+
+# pytest-homeassistant-custom-component disables sockets, but the asyncio
+# event loop opens a self-pipe socket as soon as it's instantiated. Allow
+# sockets for this module so even pure-logic tests can run.
+pytestmark = pytest.mark.enable_socket
 
 
 def _entity_card(entity_id: str) -> list[dict]:
