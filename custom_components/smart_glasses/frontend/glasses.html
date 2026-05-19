@@ -113,6 +113,7 @@
       position: fixed; bottom: 6px; left: 0; right: 0;
       text-align: center; font-size: 14px; color: var(--dim);
       pointer-events: none;
+      display: none !important;
     }
   </style>
 </head>
@@ -307,6 +308,7 @@
       });
 
       ws.addEventListener("close", () => {
+        if (!ws) return; // Intentionally closed
         setStatus("Reconnecting…");
         scheduleReconnect();
       });
@@ -336,8 +338,15 @@
       localStorage.removeItem(LS_SESSION_KEY);
       token = null;
       sessionId = null;
-      try { ws?.close(); } catch { /* ignore */ }
-      ws = null;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (ws) {
+        const oldWs = ws;
+        ws = null;
+        try { oldWs.close(); } catch { /* ignore */ }
+      }
       bootstrap();
     }
 
