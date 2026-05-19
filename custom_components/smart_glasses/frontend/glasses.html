@@ -169,8 +169,19 @@
     const $status = document.getElementById("status");
 
     // ----- State ----------------------------------------------------------
-    let token = localStorage.getItem(LS_TOKEN_KEY);
-    let sessionId = localStorage.getItem(LS_SESSION_KEY);
+    // Defensive: an older version of this app could write the literal
+    // string "undefined" into localStorage if the auth handshake misfired.
+    // Scrub those before anything else touches them.
+    const cleanLS = (k) => {
+      const v = localStorage.getItem(k);
+      if (v === null || v === "undefined" || v === "null" || v === "") {
+        localStorage.removeItem(k);
+        return null;
+      }
+      return v;
+    };
+    let token = cleanLS(LS_TOKEN_KEY);
+    let sessionId = cleanLS(LS_SESSION_KEY);
     let cards = [];              // configured cards
     let currentCardIndex = 0;
     let states = new Map();      // entity_id -> state object (live)
@@ -185,55 +196,86 @@
     async function ensurePaired() {
       if (token) return true;
 
-      let pairing = null;
+      // Try to recover an in-flight pairing first. A stale session_id from
+      // localStorage might still be live on the server (still pending), or
+      // it might be 404/410'd — in which case we start fresh.
+      let pendingPairing = null; // {session_id, code}
+
       if (sessionId) {
-        // We have a session id from a prior load. Try to recover.
         try {
           const res = await fetch(`/api/smart_glasses/pair/${sessionId}/token`);
-          if (res.ok) {
+          if (res.status === 200) {
             const data = await res.json();
-            token = data.token;
-            localStorage.setItem(LS_TOKEN_KEY, token);
-            return true;
-          }
-          if (res.status === 404) {
+            if (data.token) {
+              token = data.token;
+              localStorage.setItem(LS_TOKEN_KEY, token);
+              return true;
+            }
+          } else if (res.status === 202) {
+            const data = await res.json();
+            pendingPairing = { session_id: sessionId, code: data.code };
+          } else if (res.status === 404 || res.status === 410) {
+            // Server doesn't know us, or token was already collected.
+            // Either way, our local state is dead — re-pair fresh.
             sessionId = null;
             localStorage.removeItem(LS_SESSION_KEY);
           }
-        } catch { /* fall through */ }
+        } catch { /* fall through to create */ }
       }
 
-      if (!sessionId) {
+      // Either we never had a session, or it's gone — request a new one.
+      if (!pendingPairing) {
         const res = await fetch("/api/smart_glasses/pair/start", { method: "POST" });
+        if (res.status === 429) {
+          // Rate-limited. Show a clear message and back off.
+          $pairCode.textContent = "—";
+          $pairHost.textContent = location.host;
+          $pairProgress.textContent = "Too many pairing attempts. Wait a minute, then refresh.";
+          showPanel("pair");
+          throw new Error("rate-limited");
+        }
+        if (!res.ok) {
+          $pairProgress.textContent = `Pair start failed (${res.status})`;
+          throw new Error(`pair_start ${res.status}`);
+        }
         const data = await res.json();
+        if (!data.session_id || !data.code) {
+          throw new Error("pair_start: missing session_id/code");
+        }
         sessionId = data.session_id;
         localStorage.setItem(LS_SESSION_KEY, sessionId);
-        pairing = data;
+        pendingPairing = data;
       }
 
-      $pairCode.textContent = pairing?.code ?? "—";
+      $pairCode.textContent = pendingPairing.code;
       $pairHost.textContent = location.host;
+      $pairProgress.textContent = "Waiting for approval…";
       showPanel("pair");
 
-      // Poll until token shows up.
-      return new Promise((resolve) => {
+      // Poll until the admin approves the code on the panel.
+      return new Promise((resolve, reject) => {
         pairTimer = setInterval(async () => {
           try {
             const res = await fetch(`/api/smart_glasses/pair/${sessionId}/token`);
             if (res.status === 200) {
               const data = await res.json();
+              if (!data.token) {
+                throw new Error("approved response missing token");
+              }
               token = data.token;
               localStorage.setItem(LS_TOKEN_KEY, token);
               clearInterval(pairTimer);
               resolve(true);
-            } else if (res.status === 404) {
-              // Server forgot us. Start over.
+            } else if (res.status === 404 || res.status === 410) {
+              // Lost our spot. Start completely over.
               clearInterval(pairTimer);
               sessionId = null;
               localStorage.removeItem(LS_SESSION_KEY);
               resolve(ensurePaired());
-            } else {
+            } else if (res.status === 202) {
               $pairProgress.textContent = `Waiting for approval…  (${new Date().toLocaleTimeString()})`;
+            } else {
+              $pairProgress.textContent = `Server returned ${res.status}`;
             }
           } catch (err) {
             $pairProgress.textContent = `Network error: ${err.message}`;

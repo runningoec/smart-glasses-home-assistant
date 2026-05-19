@@ -251,7 +251,10 @@ class PairTokenView(HomeAssistantView):
         if not p:
             return self.json_message("unknown session", status_code=404)
         if not p.get("token_hash"):
-            return self.json({"status": "pending"}, status_code=202)
+            # Still waiting on approval. Include the code so a re-launched
+            # glasses app can recover and keep displaying the SAME code
+            # instead of churning /pair/start every page load.
+            return self.json({"status": "pending", "code": p["code"]}, status_code=202)
         pickup = p.get("token_pickup")
         if not pickup:
             return self.json_message(
