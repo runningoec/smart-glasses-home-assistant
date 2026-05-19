@@ -49,6 +49,7 @@ from homeassistant.core import HomeAssistant, callback
 from .const import (
     API_PREFIX,
     DOMAIN,
+    FAVICON_PATH,
     GLASSES_APP_URL,
     GLASSES_HTML_PATH,
     MAX_ENTITIES,
@@ -288,6 +289,25 @@ class GlassesAppView(HomeAssistantView):
         return web.FileResponse(
             GLASSES_HTML_PATH,
             headers={"cache-control": "no-store, no-cache, must-revalidate"},
+        )
+
+
+class FaviconView(HomeAssistantView):
+    """Serve the integration's 192x192 favicon for the glasses Web App.
+    Long-cached because the file rarely changes; version bumps would
+    propagate via a new release path if we ever needed cache-busting."""
+
+    url = "/smart_glasses_static/favicon-192x192.png"
+    name = f"{DOMAIN}:favicon"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.StreamResponse:
+        return web.FileResponse(
+            FAVICON_PATH,
+            headers={
+                "content-type": "image/png",
+                "cache-control": "public, max-age=86400",
+            },
         )
 
 
@@ -877,6 +897,7 @@ class AuditView(HomeAssistantView):
 
 ALL_VIEWS: list[type[HomeAssistantView]] = [
     GlassesAppView,
+    FaviconView,
     PanelJsView,
     PairStartView,
     PairTokenView,

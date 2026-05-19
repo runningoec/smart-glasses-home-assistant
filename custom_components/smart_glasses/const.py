@@ -56,6 +56,7 @@ PAIR_START_PER_IP_PER_MIN = 6
 FRONTEND_DIR: Path = Path(__file__).parent / "frontend"
 PANEL_JS_PATH: Path = FRONTEND_DIR / "panel.js"
 GLASSES_HTML_PATH: Path = FRONTEND_DIR / "glasses.html"
+FAVICON_PATH: Path = FRONTEND_DIR / "favicon-192x192.png"
 
 # Route that serves panel.js. Lives under /api/ so it goes through a
 # HomeAssistantView (which lets us send explicit Cache-Control: no-store)

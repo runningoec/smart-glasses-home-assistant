@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Smart Glasses for Home Assistant" width="180">
+</p>
+
 # Smart Glasses for Home Assistant
 
 [![HACS Custom][hacs-shield]][hacs-link]
