@@ -34,15 +34,19 @@ from .const import STORAGE_KEY, STORAGE_VERSION
 
 
 class SmartGlassesStore:
+    # Cap on retained audit entries. Newest first; older entries are dropped.
+    AUDIT_CAP = 200
+
     def __init__(self, hass: HomeAssistant) -> None:
         self._hass = hass
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self._data: dict[str, Any] = {"cards": [], "pairings": {}}
+        self._data: dict[str, Any] = {"cards": [], "pairings": {}, "audit": []}
 
     async def async_load(self) -> None:
         loaded = await self._store.async_load()
         if loaded:
             self._data["pairings"] = dict(loaded.get("pairings") or {})
+            self._data["audit"] = list(loaded.get("audit") or [])
             if "cards" in loaded:
                 self._data["cards"] = list(loaded["cards"])
             else:
@@ -123,3 +127,22 @@ class SmartGlassesStore:
         if p is not None:
             await self.async_save()
         return p
+
+    # ---- audit log -------------------------------------------------------
+
+    @property
+    def audit(self) -> list[dict[str, Any]]:
+        return list(self._data["audit"])
+
+    async def async_audit(self, action: str, **fields: Any) -> None:
+        """Append an audit entry. Capped at AUDIT_CAP (oldest dropped).
+
+        Tokens / refresh_ids must NEVER be logged here — anything stored
+        ends up serialised to .storage/smart_glasses alongside the data.
+        """
+        entry: dict[str, Any] = {"ts": time.time(), "action": action}
+        entry.update({k: v for k, v in fields.items() if k not in {"token", "refresh_id"}})
+        self._data["audit"].insert(0, entry)
+        if len(self._data["audit"]) > self.AUDIT_CAP:
+            self._data["audit"] = self._data["audit"][: self.AUDIT_CAP]
+        await self.async_save()

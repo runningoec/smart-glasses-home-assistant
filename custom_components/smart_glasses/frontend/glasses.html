@@ -144,6 +144,16 @@
     // ----- Constants ------------------------------------------------------
     const LS_TOKEN_KEY = "smartGlasses.token";
     const LS_SESSION_KEY = "smartGlasses.sessionId";
+
+    // HTML-escape any HA-supplied string before interpolating into innerHTML.
+    // Defensive: requires HA admin to inject a hostile entity name in the
+    // first place, but no reason to leave it open.
+    const esc = (s) => String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
     const POLL_PAIR_MS = 2000;
     const RECONNECT_BASE_MS = 1500;
     const RECONNECT_MAX_MS = 20000;
@@ -395,7 +405,7 @@
         if (item.type === "action") {
           return `
             <div class="cell" data-idx="${idx}" data-type="action" data-on="unset" data-stale="false">
-              <div class="name">${item.name}</div>
+              <div class="name">${esc(item.name)}</div>
               <div class="value">ACT</div>
             </div>
           `;
@@ -408,9 +418,9 @@
                       : s?.state === "off" || s?.state === "closed" ? "false"
                       : "unset";
           return `
-            <div class="cell" data-idx="${idx}" data-type="entity" data-eid="${eid}" data-on="${onAttr}" data-stale="${stale}">
-              <div class="name">${name}</div>
-              <div class="value">${s ? fmtState(s) : "—"}</div>
+            <div class="cell" data-idx="${idx}" data-type="entity" data-eid="${esc(eid)}" data-on="${onAttr}" data-stale="${stale}">
+              <div class="name">${esc(name)}</div>
+              <div class="value">${s ? esc(fmtState(s)) : "—"}</div>
             </div>
           `;
         }

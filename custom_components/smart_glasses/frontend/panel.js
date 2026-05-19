@@ -8,6 +8,36 @@
 
 const MAX_ENTITIES = 8;
 
+// HTML-escape any user-supplied string before interpolating into innerHTML.
+// Without this, an entity with friendly_name "<img src=x onerror=alert(1)>"
+// would execute the script in this panel's context. (Not exploitable without
+// HA admin in the first place, but no reason to leave it open.)
+const esc = (s) => String(s ?? "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+
+function timeAgo(ts) {
+  if (!ts) return "";
+  const sec = Math.max(0, (Date.now() / 1000) - ts);
+  if (sec < 60) return `${Math.floor(sec)}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
+function describeAudit(a) {
+  const who = a.user_name ? `<strong>${esc(a.user_name)}</strong>` : "someone";
+  switch (a.action) {
+    case "pair_approved": return `${who} approved pairing <code>${esc(a.code)}</code>`;
+    case "pair_revoked":  return `${who} revoked pairing <code>${esc(a.code ?? "?")}</code>${a.had_token ? " (had token)" : ""}`;
+    case "cards_saved":   return `${who} saved <strong>${a.card_count}</strong> cards (${a.total_items} items, via ${esc(a.source ?? "?")})`;
+    default:              return `${who} ${esc(a.action)}`;
+  }
+}
+
 class SmartGlassesPanel extends HTMLElement {
   constructor() {
     super();
@@ -20,6 +50,8 @@ class SmartGlassesPanel extends HTMLElement {
     this._yamlText = "";      // current cards rendered as YAML (server-formatted)
     this._yamlDirty = false;  // textarea diverges from _yamlText?
     this._yamlMessage = "";   // last apply/validation message
+    this._audit = [];         // audit log entries, newest first
+    this._toast = "";         // transient banner shown above the panel
     this._dirtyCards = false;
     this._loaded = false;
     this._lastRenderKey = null;       // cheap content hash; skip render if unchanged
@@ -100,10 +132,11 @@ class SmartGlassesPanel extends HTMLElement {
 
   async _loadAll() {
     try {
-      const [cRes, pRes, yamlText] = await Promise.all([
+      const [cRes, pRes, yamlText, aRes] = await Promise.all([
         this._api("GET", "/cards"),
         this._api("GET", "/pairings"),
         this._yamlFetch().catch(() => ""), // non-fatal: panel still works without YAML
+        this._api("GET", "/audit").catch(() => ({ audit: [] })),
       ]);
       this._cards = cRes.cards ?? [];
       if (this._cards.length > 0 && !this._selectedCardId) {
@@ -111,12 +144,20 @@ class SmartGlassesPanel extends HTMLElement {
       }
       this._pairings = pRes.pairings ?? [];
       if (!this._yamlDirty) this._yamlText = yamlText;
+      this._audit = aRes.audit ?? [];
       this._render();
     } catch (err) {
       console.error("smart_glasses load failed", err);
       this._error = err.message;
       this._render();
     }
+  }
+
+  _showToast(msg) {
+    this._toast = msg;
+    this._render();
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => { this._toast = ""; this._render(); }, 3000);
   }
 
   // YAML calls go through plain fetch because the endpoint returns/accepts
@@ -168,16 +209,32 @@ class SmartGlassesPanel extends HTMLElement {
       await this._api("PUT", "/cards", { cards: this._cards });
       this._dirtyCards = false;
       this._error = null;
+      this._showToast("Saved");
+      await this._loadAll();
     } catch (err) {
       this._error = err.message;
+      this._render();
     }
-    this._render();
   }
 
   async _approve(code) {
+    // Bind approval to (code, session_id). The panel already has the pairing
+    // list locally — look up the session_id for this code rather than asking
+    // the server to find one. If two pending pairings share a code (very
+    // rare), the user effectively picks via the panel's row order.
+    const match = this._pairings.find(p => !p.approved && p.code === code);
+    if (!match) {
+      this._error = `No pending pairing with code ${code}.`;
+      this._render();
+      return;
+    }
     try {
-      await this._api("POST", "/pair/approve", { code });
+      await this._api("POST", "/pair/approve", {
+        code,
+        session_id: match.session_id,
+      });
       this._approveCode = "";
+      this._showToast(`Approved ${code}`);
       await this._loadAll();
     } catch (err) {
       this._error = err.message;
@@ -188,6 +245,7 @@ class SmartGlassesPanel extends HTMLElement {
   async _revoke(sessionId) {
     try {
       await this._api("DELETE", `/pair/${sessionId}`);
+      this._showToast("Revoked");
       await this._loadAll();
     } catch (err) {
       this._error = err.message;
@@ -241,6 +299,8 @@ class SmartGlassesPanel extends HTMLElement {
       err: this._error ?? null,
       yt: this._yamlText,
       ym: this._yamlMessage,
+      au: this._audit,
+      t: this._toast,
     });
     if (key === this._lastRenderKey && this.children.length > 0) {
       return;
@@ -384,9 +444,24 @@ class SmartGlassesPanel extends HTMLElement {
                 font-size: 12px; background: rgba(255,255,255,0.08); margin-left: 8px; }
         .approve-row { display: flex; gap: 8px; margin-top: 12px; }
         .approve-row input { flex: 1; }
+        .toast {
+          position: sticky; top: 16px;
+          background: var(--success-color, #2e7d32); color: #fff;
+          padding: 10px 14px; border-radius: 8px; margin-bottom: 16px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.25); font-weight: 600;
+        }
+        .audit-row {
+          display: flex; align-items: baseline; justify-content: space-between;
+          padding: 8px 0; border-bottom: 1px solid var(--divider-color, #333);
+        }
+        .audit-row:last-child { border-bottom: none; }
+        .audit-row .when { color: var(--secondary-text-color); font-size: 12px; margin-left: 12px; white-space: nowrap; }
+        .audit-row code { font-size: 13px; background: var(--secondary-background-color, #2a2a2a);
+                          padding: 1px 5px; border-radius: 4px; }
       </style>
       <div class="root">
-        ${this._error ? `<div class="error">${this._error}</div>` : ""}
+        ${this._toast ? `<div class="toast">${esc(this._toast)}</div>` : ""}
+        ${this._error ? `<div class="error">${esc(this._error)}</div>` : ""}
 
         <div class="card">
           <details class="setup" ${setupOpen}>
@@ -432,9 +507,9 @@ class SmartGlassesPanel extends HTMLElement {
           <div class="meta">Manage your dashboard cards. Each card holds up to 8 items (entities or actions).</div>
           <div class="entity-list" style="margin-top: 0; margin-bottom: 16px; max-height: 200px;">
             ${this._cards.length === 0 ? '<div class="entity" style="cursor:default;">No cards.</div>' : this._cards.map(c => `
-              <div class="entity ${this._selectedCardId === c.id ? "selected" : ""}" data-action="select-card" data-card="${c.id}">
+              <div class="entity ${this._selectedCardId === c.id ? "selected" : ""}" data-action="select-card" data-card="${esc(c.id)}">
                 <div>
-                  <div class="entity-name">${c.name}</div>
+                  <div class="entity-name">${esc(c.name)}</div>
                   <div class="entity-id">${c.items.length} / ${MAX_ENTITIES} items</div>
                 </div>
                 ${this._selectedCardId === c.id ? "<div>▶</div>" : ""}
@@ -452,7 +527,7 @@ class SmartGlassesPanel extends HTMLElement {
             <h2 style="margin: 0;">Edit Card</h2>
             <button data-action="remove-card" class="danger" style="padding: 6px 12px;">Delete Card</button>
           </div>
-          <input type="text" data-action="rename-card" value="${currentCard.name}" placeholder="Card Name">
+          <input type="text" data-action="rename-card" value="${esc(currentCard.name)}" placeholder="Card Name">
           
           <h3 style="margin-top: 24px; font-size: 16px;">Items (${currentCard.items.length}/${MAX_ENTITIES})</h3>
           ${currentCard.items.length === 0
@@ -465,8 +540,8 @@ class SmartGlassesPanel extends HTMLElement {
                   return `
                     <div class="selected-row">
                       <div>
-                        <div class="entity-name">${name}</div>
-                        <div class="entity-id">${item.entity_id} · <span style="color:var(--primary-text-color)">${state}</span></div>
+                        <div class="entity-name">${esc(name)}</div>
+                        <div class="entity-id">${esc(item.entity_id)} · <span style="color:var(--primary-text-color)">${esc(state)}</span></div>
                       </div>
                       <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
                     </div>
@@ -475,8 +550,8 @@ class SmartGlassesPanel extends HTMLElement {
                   return `
                     <div class="selected-row">
                       <div>
-                        <div class="entity-name">${item.name}</div>
-                        <div class="entity-id">${item.action}${item.target ? ` · ${item.target}` : ''} <span class="pill" style="margin-left: 4px; background: rgba(3, 169, 244, 0.2); color: #03a9f4;">action</span></div>
+                        <div class="entity-name">${esc(item.name)}</div>
+                        <div class="entity-id">${esc(item.action)}${item.target ? ` · ${esc(item.target)}` : ''} <span class="pill" style="margin-left: 4px; background: rgba(3, 169, 244, 0.2); color: #03a9f4;">action</span></div>
                       </div>
                       <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
                     </div>
@@ -503,10 +578,10 @@ class SmartGlassesPanel extends HTMLElement {
               : matching.map((s) => {
                   const onCard = currentCard.items.some(i => i.type === 'entity' && i.entity_id === s.entity_id);
                   return `
-                  <div class="entity ${onCard ? "selected" : ""}" data-action="toggle" data-entity="${s.entity_id}">
+                  <div class="entity ${onCard ? "selected" : ""}" data-action="toggle" data-entity="${esc(s.entity_id)}">
                     <div>
-                      <div class="entity-name">${s.attributes.friendly_name || s.entity_id}</div>
-                      <div class="entity-id">${s.entity_id} · ${s.state}</div>
+                      <div class="entity-name">${esc(s.attributes.friendly_name || s.entity_id)}</div>
+                      <div class="entity-id">${esc(s.entity_id)} · ${esc(s.state)}</div>
                     </div>
                     <div>${onCard ? "✓" : ""}</div>
                   </div>
@@ -542,7 +617,7 @@ class SmartGlassesPanel extends HTMLElement {
               <button data-action="yaml-copy" class="secondary">Copy</button>
               <button data-action="yaml-reload" class="secondary">Reload from server</button>
               ${this._yamlMessage
-                ? `<span class="meta" style="margin-left:auto;">${this._yamlMessage}</span>`
+                ? `<span class="meta" style="margin-left:auto;">${esc(this._yamlMessage)}</span>`
                 : ""}
             </div>
           </details>
@@ -563,14 +638,35 @@ class SmartGlassesPanel extends HTMLElement {
               : this._pairings.map((p) => `
                   <div class="pair-row">
                     <div>
-                      <span class="pair-code">${p.code}</span>
+                      <span class="pair-code">${esc(p.code)}</span>
                       <span class="pill">${p.approved ? "approved" : "pending"}</span>
                     </div>
-                    <button class="danger" data-action="revoke" data-session="${p.session_id}">Revoke</button>
+                    <button class="danger" data-action="revoke" data-session="${esc(p.session_id)}">Revoke</button>
                   </div>
                 `).join("")
             }
           </div>
+        </div>
+
+        <div class="card">
+          <details ${this._audit.length > 0 ? "" : "open"}>
+            <summary style="cursor:pointer; font-size:20px; font-weight:600;">
+              Audit log <span class="meta" style="font-weight:400;">(last ${this._audit.length} events)</span>
+            </summary>
+            <div class="meta" style="margin-top:8px">
+              Pairing approvals, revocations, and card edits. Newest first. Capped at 200 entries; older events drop off.
+            </div>
+            <div style="margin-top: 12px;">
+              ${this._audit.length === 0
+                ? `<div class="meta">Nothing yet.</div>`
+                : this._audit.map((a) => `
+                    <div class="audit-row">
+                      <div>${describeAudit(a)}</div>
+                      <div class="when">${esc(timeAgo(a.ts))}</div>
+                    </div>
+                  `).join("")}
+            </div>
+          </details>
         </div>
       </div>
     `;

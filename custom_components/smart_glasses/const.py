@@ -37,6 +37,14 @@ PAIRING_CODE_LENGTH = 6
 # must request a new code.
 PAIRING_TTL_SECONDS = 300
 
+# Cap on unapproved pairing sessions across the whole install. A bad actor
+# hitting /pair/start in a loop can't blow up storage past this.
+MAX_PENDING_PAIRINGS = 50
+
+# Per-IP rate limit on /pair/start (token bucket). Refilled at one token per
+# second; this is also the burst allowance.
+PAIR_START_PER_IP_PER_MIN = 6
+
 # Resolves frontend bundle paths relative to this file (no matter where HA
 # installs the integration on disk).
 FRONTEND_DIR: Path = Path(__file__).parent / "frontend"

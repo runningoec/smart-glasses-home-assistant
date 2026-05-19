@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import secrets
 import string
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -43,6 +44,8 @@ from .const import (
     GLASSES_APP_URL,
     GLASSES_HTML_PATH,
     MAX_ENTITIES,
+    MAX_PENDING_PAIRINGS,
+    PAIR_START_PER_IP_PER_MIN,
     PAIRING_CODE_LENGTH,
     PAIRING_TTL_SECONDS,
     PANEL_JS_PATH,
@@ -66,6 +69,33 @@ def _new_code() -> str:
 
 def _store(hass: HomeAssistant) -> SmartGlassesStore:
     return hass.data[DOMAIN]["store"]
+
+
+# Sliding-window per-IP rate limit on /pair/start. In-memory; resets on HA
+# restart. Sized for legitimate users (a few starts per minute at most) while
+# making spam unprofitable.
+_RATE_LIMIT_PAIR_START: dict[str, list[float]] = {}
+_RATE_LIMIT_WINDOW_SEC = 60.0
+
+
+def _rate_limit_check(ip: str) -> bool:
+    """Return True if the request from this IP is within the budget.
+
+    The dict only stores timestamps inside the current 60-second window, so
+    memory stays bounded as long as the host of IPs hitting us is finite.
+    """
+    now = time.time()
+    recent = [t for t in _RATE_LIMIT_PAIR_START.get(ip, []) if now - t < _RATE_LIMIT_WINDOW_SEC]
+    if len(recent) >= PAIR_START_PER_IP_PER_MIN:
+        _RATE_LIMIT_PAIR_START[ip] = recent
+        return False
+    recent.append(now)
+    _RATE_LIMIT_PAIR_START[ip] = recent
+    # Opportunistic eviction: every now and then, drop empty IP entries.
+    if len(_RATE_LIMIT_PAIR_START) > 256:
+        for k in [k for k, v in _RATE_LIMIT_PAIR_START.items() if not v]:
+            _RATE_LIMIT_PAIR_START.pop(k, None)
+    return True
 
 
 def _validate_cards(hass: HomeAssistant, cards: Any) -> str | None:
@@ -163,16 +193,31 @@ class PairStartView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         store = _store(hass)
 
-        # Prune any expired-and-unapproved sessions so the user doesn't
-        # accumulate dead pairings just by leaving the app open.
-        now = request.loop.time()
-        # Approved pairings stay forever (revoke via panel); only expire unapproved.
-        # Storage stores epoch in created_at, not loop time — use time.time() instead.
-        import time as _time
+        # Rate-limit before doing any work. Endpoint is unauthenticated and
+        # internet-reachable, so a bored attacker could otherwise spam it.
+        ip = request.remote or "unknown"
+        if not _rate_limit_check(ip):
+            return self.json_message(
+                "too many pairing attempts; try again in a minute",
+                status_code=429,
+            )
 
+        # Prune any expired-and-unapproved sessions so the user doesn't
+        # accumulate dead pairings just by leaving the app open. Approved
+        # pairings stay forever (revoke via panel) — only expire unapproved.
         for sid, p in list(store.pairings.items()):
-            if p["approved_at"] is None and _time.time() - p["created_at"] > PAIRING_TTL_SECONDS:
+            if p["approved_at"] is None and time.time() - p["created_at"] > PAIRING_TTL_SECONDS:
                 await store.async_delete_pairing(sid)
+
+        # Hard cap on pending sessions across the whole install. Stops a
+        # spammer from running us out of disk by hammering /pair/start with
+        # spoofed IPs (each individually under the rate limit).
+        pending = sum(1 for p in store.pairings.values() if p["approved_at"] is None)
+        if pending >= MAX_PENDING_PAIRINGS:
+            return self.json_message(
+                "too many pending pairings; ask an admin to revoke unused ones",
+                status_code=503,
+            )
 
         session_id = secrets.token_urlsafe(18)
         code = _new_code()
@@ -251,13 +296,18 @@ class PairApproveView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         body = await request.json()
         code = (body.get("code") or "").upper().strip()
+        session_id = (body.get("session_id") or "").strip()
         if not code:
             return self.json_message("missing code", status_code=400)
+        if not session_id:
+            return self.json_message("missing session_id", status_code=400)
 
         store = _store(hass)
-        pairing = store.find_pairing_by_code(code)
-        if not pairing:
-            return self.json_message("no pairing for code", status_code=404)
+        pairing = store.get_pairing(session_id)
+        # Bind approval to (session_id, code) — both must come from the same
+        # pairing record. Stops a stolen code alone from being claimed.
+        if not pairing or pairing.get("code") != code:
+            return self.json_message("no pairing matches code+session_id", status_code=404)
         if pairing["token"]:
             return self.json_message("pairing already approved", status_code=409)
 
@@ -284,6 +334,13 @@ class PairApproveView(HomeAssistantView):
             refresh_id=refresh_token.id,
             token=access_token,
         )
+        await store.async_audit(
+            "pair_approved",
+            user_id=user.id,
+            user_name=user.name,
+            session_id=pairing["session_id"],
+            code=pairing["code"],
+        )
         return self.json({"ok": True, "session_id": pairing["session_id"]})
 
 
@@ -307,6 +364,15 @@ class PairRevokeView(HomeAssistantView):
             if refresh is not None:
                 await hass.auth.async_remove_refresh_token(refresh)
         await store.async_delete_pairing(session_id)
+        user = request["hass_user"]
+        await store.async_audit(
+            "pair_revoked",
+            user_id=getattr(user, "id", None),
+            user_name=getattr(user, "name", None),
+            session_id=session_id,
+            code=p.get("code"),
+            had_token=bool(p.get("token")),
+        )
         return self.json({"ok": True})
 
 
@@ -332,7 +398,17 @@ class CardsView(HomeAssistantView):
         err = _validate_cards(hass, cards)
         if err is not None:
             return self.json_message(err, status_code=400)
-        await _store(hass).async_set_cards(cards)
+        store = _store(hass)
+        await store.async_set_cards(cards)
+        user = request["hass_user"]
+        await store.async_audit(
+            "cards_saved",
+            user_id=getattr(user, "id", None),
+            user_name=getattr(user, "name", None),
+            card_count=len(cards),
+            total_items=sum(len(c.get("items", [])) for c in cards),
+            source="json",
+        )
         return self.json({"ok": True, "cards": cards})
 
 
@@ -373,8 +449,31 @@ class CardsYamlView(HomeAssistantView):
         err_msg = _validate_cards(hass, cards)
         if err_msg is not None:
             return self.json_message(err_msg, status_code=400)
-        await _store(hass).async_set_cards(cards)
+        store = _store(hass)
+        await store.async_set_cards(cards)
+        user = request["hass_user"]
+        await store.async_audit(
+            "cards_saved",
+            user_id=getattr(user, "id", None),
+            user_name=getattr(user, "name", None),
+            card_count=len(cards),
+            total_items=sum(len(c.get("items", [])) for c in cards),
+            source="yaml",
+        )
         return self.json({"ok": True, "cards": cards})
+
+
+class AuditView(HomeAssistantView):
+    """Latest audit log entries (newest first). Used by the panel to show
+    recent approvals, revocations, and config changes."""
+
+    url = f"{API_PREFIX}/audit"
+    name = f"{DOMAIN}:audit"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        return self.json({"audit": _store(hass).audit})
 
 
 ALL_VIEWS: list[type[HomeAssistantView]] = [
@@ -387,4 +486,5 @@ ALL_VIEWS: list[type[HomeAssistantView]] = [
     PairRevokeView,
     CardsView,
     CardsYamlView,
+    AuditView,
 ]
