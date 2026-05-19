@@ -440,9 +440,31 @@ class SmartGlassesPanel extends HTMLElement {
           this._saveEntities();
         } else if (action === "search") {
           this._search = el.value;
-          // Re-render lazily to avoid losing focus on input — small debounce.
-          clearTimeout(this._searchTimer);
-          this._searchTimer = setTimeout(() => this._render(), 100);
+          const search = this._search.toLowerCase();
+          const matching = this._allEntities().filter((s) => {
+            if (!search) return true;
+            return (s.entity_id.toLowerCase().includes(search) || (s.attributes.friendly_name || "").toLowerCase().includes(search));
+          }).slice(0, 80);
+          
+          const list = this.querySelector(".entity-list");
+          if (list) {
+            const selectedSet = new Set(this._entities);
+            list.innerHTML = matching.length === 0 ? `<div class="entity">No matches.</div>` : matching.map((s) => `
+                  <div class="entity ${selectedSet.has(s.entity_id) ? "selected" : ""}" data-action="toggle" data-entity="${s.entity_id}">
+                    <div>
+                      <div class="entity-name">${s.attributes.friendly_name || s.entity_id}</div>
+                      <div class="entity-id">${s.entity_id} · ${s.state}</div>
+                    </div>
+                    <div>${selectedSet.has(s.entity_id) ? "✓" : ""}</div>
+                  </div>
+                `).join("");
+            
+            list.querySelectorAll("[data-action]").forEach((elNode) => {
+              elNode.addEventListener("click", () => {
+                if (elNode.dataset.action === "toggle") this._toggle(elNode.dataset.entity);
+              });
+            });
+          }
         } else if (action === "code") {
           this._approveCode = el.value.toUpperCase();
         } else if (action === "approve") {
