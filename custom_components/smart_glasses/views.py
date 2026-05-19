@@ -336,19 +336,28 @@ class PairApproveView(HomeAssistantView):
 
         # Random opaque session token — ~256 bits. Hashed at rest, kept only
         # on the glasses' localStorage in plaintext after the one-shot pickup.
-        token = secrets.token_urlsafe(32)
-        await store.async_approve_pairing(
-            session_id=pairing["session_id"],
-            user_id=user.id,
-            token=token,
-        )
-        await store.async_audit(
-            "pair_approved",
-            user_id=user.id,
-            user_name=user.name,
-            session_id=pairing["session_id"],
-            code=pairing["code"],
-        )
+        try:
+            token = secrets.token_urlsafe(32)
+            await store.async_approve_pairing(
+                session_id=pairing["session_id"],
+                user_id=user.id,
+                token=token,
+            )
+            await store.async_audit(
+                "pair_approved",
+                user_id=user.id,
+                user_name=user.name,
+                session_id=pairing["session_id"],
+                code=pairing["code"],
+            )
+        except Exception as err:  # noqa: BLE001
+            # Surface the real error rather than letting aiohttp swallow it
+            # into HA's generic "Server got itself in trouble" 500.
+            _LOGGER.exception("pair_approve failed for session %s", pairing["session_id"])
+            return self.json_message(
+                f"approve failed: {type(err).__name__}: {err}",
+                status_code=500,
+            )
         return self.json({"ok": True, "session_id": pairing["session_id"]})
 
 
