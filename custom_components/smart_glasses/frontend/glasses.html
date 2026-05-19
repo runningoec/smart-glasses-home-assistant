@@ -521,6 +521,17 @@
       showPanel("grid");
     }
 
+    // How many columns the grid CSS lays out for a given item count. Keep
+    // this in lock-step with #grid[data-count="..."] in <style> — Up/Down
+    // jump by this many to feel like real grid navigation.
+    function gridCols(n) {
+      if (n <= 1) return 1;
+      if (n <= 2) return 2;
+      if (n <= 4) return 2;
+      if (n <= 6) return 3;
+      return 4; // 7-8
+    }
+
     // Common helpers for nav.
     function switchCard(delta) {
       if (cards.length === 0) return;
@@ -651,28 +662,38 @@
         renderGrid();
         return;
       }
+      const cols = gridCols(items.length);
+      const row = Math.floor(focusedCellIndex / cols);
+      const col = focusedCellIndex % cols;
+
       if (evt.key === "Escape") {
         focusMode = "tabs";
         renderGrid();
         evt.preventDefault();
       } else if (evt.key === "ArrowUp") {
-        if (focusedCellIndex === 0) {
+        if (row === 0) {
+          // Already at the top row — bounce back to the tab strip.
           focusMode = "tabs";
         } else {
-          focusedCellIndex--;
+          focusedCellIndex = Math.max(0, focusedCellIndex - cols);
         }
         renderGrid();
         evt.preventDefault();
       } else if (evt.key === "ArrowDown") {
-        focusedCellIndex = Math.min(items.length - 1, focusedCellIndex + 1);
+        // Move one row down; clamp to the last item if the grid is ragged
+        // (e.g. 3 items in a 2-column grid means the bottom row has 1 item).
+        focusedCellIndex = Math.min(items.length - 1, focusedCellIndex + cols);
         renderGrid();
         evt.preventDefault();
       } else if (evt.key === "ArrowLeft") {
-        focusedCellIndex = (focusedCellIndex - 1 + items.length) % items.length;
+        // Move within the row; stay put at the left edge.
+        if (col > 0) focusedCellIndex--;
         renderGrid();
         evt.preventDefault();
       } else if (evt.key === "ArrowRight") {
-        focusedCellIndex = (focusedCellIndex + 1) % items.length;
+        // Move within the row; stay put at the right edge OR if the next
+        // cell doesn't exist (last row of a ragged grid).
+        if (col < cols - 1 && focusedCellIndex + 1 < items.length) focusedCellIndex++;
         renderGrid();
         evt.preventDefault();
       } else if (evt.key === "Enter") {
