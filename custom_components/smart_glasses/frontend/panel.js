@@ -12,11 +12,12 @@ class SmartGlassesPanel extends HTMLElement {
   constructor() {
     super();
     this._hass = null;
-    this._entities = [];      // currently-selected entity_ids
+    this._cards = [];         // user's dashboard cards
+    this._selectedCardId = null; // ID of the currently edited card
     this._pairings = [];      // server-reported pairings
     this._search = "";        // entity picker search box
     this._approveCode = "";   // pairings approve-code input
-    this._dirtyEntities = false;
+    this._dirtyCards = false;
     this._loaded = false;
     this._lastRenderKey = null;       // cheap content hash; skip render if unchanged
     this._renderCount = 0;
@@ -96,11 +97,14 @@ class SmartGlassesPanel extends HTMLElement {
 
   async _loadAll() {
     try {
-      const [eRes, pRes] = await Promise.all([
-        this._api("GET", "/entities"),
+      const [cRes, pRes] = await Promise.all([
+        this._api("GET", "/cards"),
         this._api("GET", "/pairings"),
       ]);
-      this._entities = eRes.entities ?? [];
+      this._cards = cRes.cards ?? [];
+      if (this._cards.length > 0 && !this._selectedCardId) {
+        this._selectedCardId = this._cards[0].id;
+      }
       this._pairings = pRes.pairings ?? [];
       this._render();
     } catch (err) {
@@ -110,10 +114,10 @@ class SmartGlassesPanel extends HTMLElement {
     }
   }
 
-  async _saveEntities() {
+  async _saveCards() {
     try {
-      await this._api("PUT", "/entities", { entities: this._entities });
-      this._dirtyEntities = false;
+      await this._api("PUT", "/cards", { cards: this._cards });
+      this._dirtyCards = false;
       this._error = null;
     } catch (err) {
       this._error = err.message;
@@ -153,15 +157,17 @@ class SmartGlassesPanel extends HTMLElement {
     );
   }
 
-  _toggle(entityId) {
-    const idx = this._entities.indexOf(entityId);
+  _toggleItem(entityId) {
+    const card = this._cards.find(c => c.id === this._selectedCardId);
+    if (!card) return;
+    const idx = card.items.findIndex(i => i.type === 'entity' && i.entity_id === entityId);
     if (idx >= 0) {
-      this._entities.splice(idx, 1);
+      card.items.splice(idx, 1);
     } else {
-      if (this._entities.length >= MAX_ENTITIES) return;
-      this._entities.push(entityId);
+      if (card.items.length >= MAX_ENTITIES) return;
+      card.items.push({ type: 'entity', entity_id: entityId });
     }
-    this._dirtyEntities = true;
+    this._dirtyCards = true;
     this._render();
   }
 
@@ -177,11 +183,12 @@ class SmartGlassesPanel extends HTMLElement {
     // if HA's frontend invokes setters or remounts the panel in a tight
     // loop, we won't actually rewrite innerHTML unless something changed.
     const key = JSON.stringify({
-      e: this._entities,
+      c: this._cards,
+      sc: this._selectedCardId,
       p: this._pairings,
       s: this._search,
-      c: this._approveCode,
-      d: this._dirtyEntities,
+      ac: this._approveCode,
+      d: this._dirtyCards,
       err: this._error ?? null,
     });
     if (key === this._lastRenderKey && this.children.length > 0) {
@@ -211,7 +218,7 @@ class SmartGlassesPanel extends HTMLElement {
       })
       .slice(0, 80);
 
-    const selectedSet = new Set(this._entities);
+    const currentCard = this._cards.find(c => c.id === this._selectedCardId);
 
     // Suggest the public Web App URL we'd register with Meta. If the user is
     // viewing the panel from localhost/HTTP we can't recommend their current
@@ -367,48 +374,96 @@ class SmartGlassesPanel extends HTMLElement {
         </div>
 
         <div class="card">
-          <h2>Selected entities (${this._entities.length}/${MAX_ENTITIES})</h2>
-          <div class="meta">These are what the glasses display. Click an entity below to add/remove.</div>
-          ${this._entities.length === 0
-            ? `<div class="meta">No entities selected yet.</div>`
-            : this._entities.map((eid) => {
-                const s = this._hass.states[eid];
-                const name = s?.attributes.friendly_name || eid;
-                const state = s ? `${s.state}${s.attributes.unit_of_measurement ? " " + s.attributes.unit_of_measurement : ""}` : "—";
-                return `
-                  <div class="selected-row">
-                    <div>
-                      <div class="entity-name">${name}</div>
-                      <div class="entity-id">${eid} · <span style="color:var(--primary-text-color)">${state}</span></div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h2 style="margin: 0;">Cards</h2>
+            <button data-action="add-card" class="secondary" style="padding: 6px 12px;">+ Add Card</button>
+          </div>
+          <div class="meta">Manage your dashboard cards. Each card holds up to 8 items (entities or actions).</div>
+          <div class="entity-list" style="margin-top: 0; margin-bottom: 16px; max-height: 200px;">
+            ${this._cards.length === 0 ? '<div class="entity" style="cursor:default;">No cards.</div>' : this._cards.map(c => `
+              <div class="entity ${this._selectedCardId === c.id ? "selected" : ""}" data-action="select-card" data-card="${c.id}">
+                <div>
+                  <div class="entity-name">${c.name}</div>
+                  <div class="entity-id">${c.items.length} / ${MAX_ENTITIES} items</div>
+                </div>
+                ${this._selectedCardId === c.id ? "<div>▶</div>" : ""}
+              </div>
+            `).join("")}
+          </div>
+          <div>
+            <button data-action="save" ${this._dirtyCards ? "" : "disabled"}>Save Configuration</button>
+          </div>
+        </div>
+
+        ${currentCard ? `
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h2 style="margin: 0;">Edit Card</h2>
+            <button data-action="remove-card" class="danger" style="padding: 6px 12px;">Delete Card</button>
+          </div>
+          <input type="text" data-action="rename-card" value="${currentCard.name}" placeholder="Card Name">
+          
+          <h3 style="margin-top: 24px; font-size: 16px;">Items (${currentCard.items.length}/${MAX_ENTITIES})</h3>
+          ${currentCard.items.length === 0
+            ? \`<div class="meta">No items on this card.</div>\`
+            : currentCard.items.map((item, idx) => {
+                if (item.type === 'entity') {
+                  const s = this._hass.states[item.entity_id];
+                  const name = s?.attributes.friendly_name || item.entity_id;
+                  const state = s ? \`\${s.state}\${s.attributes.unit_of_measurement ? " " + s.attributes.unit_of_measurement : ""}\` : "—";
+                  return \`
+                    <div class="selected-row">
+                      <div>
+                        <div class="entity-name">\${name}</div>
+                        <div class="entity-id">\${item.entity_id} · <span style="color:var(--primary-text-color)">\${state}</span></div>
+                      </div>
+                      <button class="secondary" data-action="remove-item" data-index="\${idx}">Remove</button>
                     </div>
-                    <button class="secondary" data-action="remove" data-entity="${eid}">Remove</button>
-                  </div>
-                `;
+                  \`;
+                } else if (item.type === 'action') {
+                  return \`
+                    <div class="selected-row">
+                      <div>
+                        <div class="entity-name">\${item.name}</div>
+                        <div class="entity-id">\${item.action}\${item.target ? \` · \${item.target}\` : ''} <span class="pill" style="margin-left: 4px; background: rgba(3, 169, 244, 0.2); color: #03a9f4;">action</span></div>
+                      </div>
+                      <button class="secondary" data-action="remove-item" data-index="\${idx}">Remove</button>
+                    </div>
+                  \`;
+                }
               }).join("")
           }
-          <div style="margin-top: 16px;">
-            <button data-action="save" ${this._dirtyEntities ? "" : "disabled"}>Save</button>
+
+          <h3 style="margin-top: 24px; font-size: 16px;">Add Custom Action</h3>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+            <input type="text" id="action-name" placeholder="Name (e.g. Lights On)" style="flex: 1; min-width: 150px;">
+            <input type="text" id="action-service" placeholder="Service (e.g. light.turn_on)" style="flex: 1; min-width: 150px;">
+            <input type="text" id="action-target" placeholder="Target (optional, e.g. light.kitchen)" style="flex: 1; min-width: 150px;">
+            <button data-action="add-custom-action" class="secondary">Add</button>
           </div>
         </div>
 
         <div class="card">
-          <h2>Pick entities</h2>
+          <h2>Add Entities to Card</h2>
           <input type="text" placeholder="Search by name or entity_id…" data-action="search" value="${this._search}">
           <div class="entity-list">
             ${matching.length === 0
-              ? `<div class="entity">No matches.</div>`
-              : matching.map((s) => `
-                  <div class="entity ${selectedSet.has(s.entity_id) ? "selected" : ""}" data-action="toggle" data-entity="${s.entity_id}">
+              ? \`<div class="entity" style="cursor:default;">No matches.</div>\`
+              : matching.map((s) => {
+                  const onCard = currentCard.items.some(i => i.type === 'entity' && i.entity_id === s.entity_id);
+                  return \`
+                  <div class="entity \${onCard ? "selected" : ""}" data-action="toggle" data-entity="\${s.entity_id}">
                     <div>
-                      <div class="entity-name">${s.attributes.friendly_name || s.entity_id}</div>
-                      <div class="entity-id">${s.entity_id} · ${s.state}</div>
+                      <div class="entity-name">\${s.attributes.friendly_name || s.entity_id}</div>
+                      <div class="entity-id">\${s.entity_id} · \${s.state}</div>
                     </div>
-                    <div>${selectedSet.has(s.entity_id) ? "✓" : ""}</div>
+                    <div>\${onCard ? "✓" : ""}</div>
                   </div>
-                `).join("")
+                \`}).join("")
             }
           </div>
         </div>
+        ` : ""}
 
         <div class="card">
           <h2>Glasses pairings</h2>
@@ -454,12 +509,67 @@ class SmartGlassesPanel extends HTMLElement {
     this.querySelectorAll("[data-action]").forEach((el) => {
       el.addEventListener(el.tagName === "INPUT" ? "input" : "click", (evt) => {
         const action = el.dataset.action;
-        if (action === "toggle") {
-          this._toggle(el.dataset.entity);
-        } else if (action === "remove") {
-          this._toggle(el.dataset.entity);
+        if (action === "select-card") {
+          this._selectedCardId = el.dataset.card;
+          this._render();
+        } else if (action === "remove-card") {
+          if (confirm("Delete this card?")) {
+            this._cards = this._cards.filter(c => c.id !== this._selectedCardId);
+            this._selectedCardId = this._cards.length > 0 ? this._cards[0].id : null;
+            this._dirtyCards = true;
+            this._render();
+          }
+        } else if (action === "add-card") {
+          const newCard = {
+            id: Math.random().toString(36).substring(2, 9),
+            name: "New Card",
+            items: []
+          };
+          this._cards.push(newCard);
+          this._selectedCardId = newCard.id;
+          this._dirtyCards = true;
+          this._render();
+        } else if (action === "rename-card") {
+          const card = this._cards.find(c => c.id === this._selectedCardId);
+          if (card) {
+            card.name = el.value;
+            this._dirtyCards = true;
+            // No _render() to keep input focus.
+          }
+        } else if (action === "remove-item") {
+          const card = this._cards.find(c => c.id === this._selectedCardId);
+          if (card) {
+            card.items.splice(parseInt(el.dataset.index, 10), 1);
+            this._dirtyCards = true;
+            this._render();
+          }
+        } else if (action === "add-custom-action") {
+          const card = this._cards.find(c => c.id === this._selectedCardId);
+          if (!card) return;
+          if (card.items.length >= MAX_ENTITIES) return;
+          const nameInput = this.querySelector('#action-name');
+          const serviceInput = this.querySelector('#action-service');
+          const targetInput = this.querySelector('#action-target');
+          if (nameInput && nameInput.value && serviceInput && serviceInput.value) {
+            const newItem = {
+              type: 'action',
+              name: nameInput.value,
+              action: serviceInput.value
+            };
+            if (targetInput && targetInput.value) {
+              newItem.target = targetInput.value;
+            }
+            card.items.push(newItem);
+            nameInput.value = '';
+            serviceInput.value = '';
+            if (targetInput) targetInput.value = '';
+            this._dirtyCards = true;
+            this._render();
+          }
+        } else if (action === "toggle") {
+          this._toggleItem(el.dataset.entity);
         } else if (action === "save") {
-          this._saveEntities();
+          this._saveCards();
         } else if (action === "search") {
           this._search = el.value;
           const search = this._search.toLowerCase();
@@ -468,22 +578,26 @@ class SmartGlassesPanel extends HTMLElement {
             return (s.entity_id.toLowerCase().includes(search) || (s.attributes.friendly_name || "").toLowerCase().includes(search));
           }).slice(0, 80);
           
-          const list = this.querySelector(".entity-list");
+          // Only update the last .entity-list (which is the Add Entities list)
+          const lists = this.querySelectorAll(".entity-list");
+          const list = lists[lists.length - 1];
           if (list) {
-            const selectedSet = new Set(this._entities);
-            list.innerHTML = matching.length === 0 ? `<div class="entity">No matches.</div>` : matching.map((s) => `
-                  <div class="entity ${selectedSet.has(s.entity_id) ? "selected" : ""}" data-action="toggle" data-entity="${s.entity_id}">
+            const currentCard = this._cards.find(c => c.id === this._selectedCardId);
+            list.innerHTML = matching.length === 0 ? `<div class="entity" style="cursor:default;">No matches.</div>` : matching.map((s) => {
+                  const onCard = currentCard?.items.some(i => i.type === 'entity' && i.entity_id === s.entity_id);
+                  return `
+                  <div class="entity ${onCard ? "selected" : ""}" data-action="toggle" data-entity="${s.entity_id}">
                     <div>
                       <div class="entity-name">${s.attributes.friendly_name || s.entity_id}</div>
                       <div class="entity-id">${s.entity_id} · ${s.state}</div>
                     </div>
-                    <div>${selectedSet.has(s.entity_id) ? "✓" : ""}</div>
+                    <div>${onCard ? "✓" : ""}</div>
                   </div>
-                `).join("");
+                `}).join("");
             
             list.querySelectorAll("[data-action]").forEach((elNode) => {
               elNode.addEventListener("click", () => {
-                if (elNode.dataset.action === "toggle") this._toggle(elNode.dataset.entity);
+                if (elNode.dataset.action === "toggle") this._toggleItem(elNode.dataset.entity);
               });
             });
           }

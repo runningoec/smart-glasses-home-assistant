@@ -269,36 +269,61 @@ class PairRevokeView(HomeAssistantView):
         return self.json({"ok": True})
 
 
-class EntitiesView(HomeAssistantView):
-    """Get or replace the list of entity_ids the glasses should glance.
+class CardsView(HomeAssistantView):
+    """Get or replace the list of cards the glasses should glance.
 
-    GET → returns ``{entities: [...]}``
-    PUT body ``{entities: [...]}`` → replaces; 400 if more than MAX_ENTITIES.
+    GET → returns ``{cards: [...]}``
+    PUT body ``{cards: [...]}`` → replaces; validates size.
     """
 
-    url = f"{API_PREFIX}/entities"
-    name = f"{DOMAIN}:entities"
+    url = f"{API_PREFIX}/cards"
+    name = f"{DOMAIN}:cards"
     requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        return self.json({"entities": _store(hass).entities})
+        return self.json({"cards": _store(hass).cards})
 
     async def put(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
         body: dict[str, Any] = await request.json()
-        entities = body.get("entities")
-        if not isinstance(entities, list) or not all(isinstance(e, str) for e in entities):
-            return self.json_message("entities must be a list of entity_id strings", status_code=400)
-        if len(entities) > MAX_ENTITIES:
-            return self.json_message(f"max {MAX_ENTITIES} entities", status_code=400)
-        # Validate each id exists. Better to fail loudly than silently render
-        # a grid full of "unknown".
-        for eid in entities:
-            if hass.states.get(eid) is None:
-                return self.json_message(f"unknown entity_id: {eid}", status_code=400)
-        await _store(hass).async_set_entities(entities)
-        return self.json({"ok": True, "entities": entities})
+        cards = body.get("cards")
+        
+        if not isinstance(cards, list):
+            return self.json_message("cards must be a list", status_code=400)
+            
+        for card in cards:
+            if not isinstance(card, dict):
+                return self.json_message("each card must be an object", status_code=400)
+            if "id" not in card or "name" not in card or "items" not in card:
+                return self.json_message("card must have id, name, items", status_code=400)
+            items = card["items"]
+            if not isinstance(items, list):
+                return self.json_message("card items must be a list", status_code=400)
+            if len(items) > MAX_ENTITIES:
+                return self.json_message(f"max {MAX_ENTITIES} items per card", status_code=400)
+                
+            for item in items:
+                if not isinstance(item, dict) or "type" not in item:
+                    return self.json_message("item must be an object with a type", status_code=400)
+                if item["type"] == "entity":
+                    eid = item.get("entity_id")
+                    if not eid or not isinstance(eid, str):
+                        return self.json_message("entity item requires entity_id string", status_code=400)
+                    if hass.states.get(eid) is None:
+                        return self.json_message(f"unknown entity_id: {eid}", status_code=400)
+                elif item["type"] == "action":
+                    if not item.get("action") or not isinstance(item["action"], str):
+                        return self.json_message("action item requires action string", status_code=400)
+                    if not item.get("name") or not isinstance(item["name"], str):
+                        return self.json_message("action item requires name string", status_code=400)
+                    if "target" in item and not isinstance(item["target"], str):
+                        return self.json_message("action target must be a string", status_code=400)
+                else:
+                    return self.json_message(f"unknown item type: {item['type']}", status_code=400)
+
+        await _store(hass).async_set_cards(cards)
+        return self.json({"ok": True, "cards": cards})
 
 
 ALL_VIEWS: list[type[HomeAssistantView]] = [
@@ -309,5 +334,5 @@ ALL_VIEWS: list[type[HomeAssistantView]] = [
     PairingsListView,
     PairApproveView,
     PairRevokeView,
-    EntitiesView,
+    CardsView,
 ]

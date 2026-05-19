@@ -161,7 +161,8 @@
     // ----- State ----------------------------------------------------------
     let token = localStorage.getItem(LS_TOKEN_KEY);
     let sessionId = localStorage.getItem(LS_SESSION_KEY);
-    let selectedEntities = [];   // entity_ids the panel says to show
+    let cards = [];              // configured cards
+    let currentCardIndex = 0;
     let states = new Map();      // entity_id -> state object (live)
     let ws = null;
     let wsMsgId = 1;
@@ -234,8 +235,8 @@
 
     // ----- HA REST + websocket -------------------------------------------
 
-    async function fetchSelectedEntities() {
-      const res = await fetch("/api/smart_glasses/entities", {
+    async function fetchCards() {
+      const res = await fetch("/api/smart_glasses/cards", {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
@@ -243,10 +244,20 @@
           tokenInvalid();
           return [];
         }
-        throw new Error(`entities ${res.status}`);
+        throw new Error(`cards ${res.status}`);
       }
       const data = await res.json();
-      return data.entities ?? [];
+      return data.cards ?? [];
+    }
+
+    function getAllEntityIds(cards) {
+      const ids = new Set();
+      for (const c of cards) {
+        for (const item of c.items || []) {
+          if (item.type === "entity") ids.add(item.entity_id);
+        }
+      }
+      return Array.from(ids);
     }
 
     async function fetchStatesFor(entityIds) {
@@ -297,7 +308,7 @@
           const ev = msg.event;
           if (ev?.event_type !== "state_changed") return;
           const eid = ev.data?.entity_id;
-          if (!eid || !selectedEntities.includes(eid)) return;
+          if (!eid || !getAllEntityIds(cards).includes(eid)) return;
           if (ev.data.new_state) {
             states.set(eid, ev.data.new_state);
           } else {
@@ -373,24 +384,36 @@
     }
 
     function renderGrid() {
-      if (selectedEntities.length === 0) {
+      if (cards.length === 0 || !cards[currentCardIndex] || !cards[currentCardIndex].items || cards[currentCardIndex].items.length === 0) {
         showPanel("empty");
         return;
       }
-      $grid.dataset.count = String(selectedEntities.length);
-      $grid.innerHTML = selectedEntities.map((eid) => {
-        const s = states.get(eid);
-        const name = s?.attributes?.friendly_name || eid;
-        const stale = !s || s.state === "unavailable" || s.state === "unknown";
-        const onAttr = s?.state === "on" || s?.state === "open" ? "true"
-                    : s?.state === "off" || s?.state === "closed" ? "false"
-                    : "unset";
-        return `
-          <div class="cell" data-eid="${eid}" data-on="${onAttr}" data-stale="${stale}">
-            <div class="name">${name}</div>
-            <div class="value">${s ? fmtState(s) : "—"}</div>
-          </div>
-        `;
+      const card = cards[currentCardIndex];
+      const items = card.items;
+      $grid.dataset.count = String(items.length);
+      $grid.innerHTML = items.map((item, idx) => {
+        if (item.type === "action") {
+          return `
+            <div class="cell" data-idx="${idx}" data-type="action" data-on="unset" data-stale="false">
+              <div class="name">${item.name}</div>
+              <div class="value">ACT</div>
+            </div>
+          `;
+        } else {
+          const eid = item.entity_id;
+          const s = states.get(eid);
+          const name = s?.attributes?.friendly_name || eid;
+          const stale = !s || s.state === "unavailable" || s.state === "unknown";
+          const onAttr = s?.state === "on" || s?.state === "open" ? "true"
+                      : s?.state === "off" || s?.state === "closed" ? "false"
+                      : "unset";
+          return `
+            <div class="cell" data-idx="${idx}" data-type="entity" data-eid="${eid}" data-on="${onAttr}" data-stale="${stale}">
+              <div class="name">${name}</div>
+              <div class="value">${s ? fmtState(s) : "—"}</div>
+            </div>
+          `;
+        }
       }).join("");
       showPanel("grid");
     }
@@ -402,35 +425,56 @@
     $grid.addEventListener("click", (evt) => {
       const cell = evt.target.closest(".cell");
       if (!cell || !ws || ws.readyState !== WebSocket.OPEN) return;
-      const eid = cell.dataset.eid;
-      if (!eid) return;
+      const idx = cell.dataset.idx;
+      if (idx == null || cards.length === 0) return;
       
-      ws.send(JSON.stringify({
-        id: wsMsgId++,
-        type: "call_service",
-        domain: "homeassistant",
-        service: "toggle",
-        target: { entity_id: eid }
-      }));
+      const item = cards[currentCardIndex].items[idx];
+      if (item.type === "action") {
+        const parts = item.action.split(".");
+        if (parts.length !== 2) return;
+        const payload = {
+          id: wsMsgId++,
+          type: "call_service",
+          domain: parts[0],
+          service: parts[1]
+        };
+        if (item.target) {
+          payload.target = { entity_id: item.target };
+        }
+        ws.send(JSON.stringify(payload));
+      } else {
+        const eid = item.entity_id;
+        if (!eid) return;
+        ws.send(JSON.stringify({
+          id: wsMsgId++,
+          type: "call_service",
+          domain: "homeassistant",
+          service: "toggle",
+          target: { entity_id: eid }
+        }));
+      }
     });
 
     // ----- Bootstrap ------------------------------------------------------
 
     async function startGlance() {
-      selectedEntities = await fetchSelectedEntities();
-      states = await fetchStatesFor(selectedEntities);
+      cards = await fetchCards();
+      const entityIds = getAllEntityIds(cards);
+      states = await fetchStatesFor(entityIds);
       renderGrid();
       connectWebsocket();
 
       // Defensive: HA websocket usually keeps us current but we resync the
-      // selected-entity LIST every minute in case the panel changed it.
+      // cards LIST every minute in case the panel changed it.
       clearInterval(nextStatesRefresh);
       nextStatesRefresh = setInterval(async () => {
         try {
-          const fresh = await fetchSelectedEntities();
-          if (fresh.join(",") !== selectedEntities.join(",")) {
-            selectedEntities = fresh;
-            states = await fetchStatesFor(selectedEntities);
+          const freshCards = await fetchCards();
+          if (JSON.stringify(freshCards) !== JSON.stringify(cards)) {
+            cards = freshCards;
+            if (currentCardIndex >= cards.length) currentCardIndex = 0;
+            const newEntityIds = getAllEntityIds(cards);
+            states = await fetchStatesFor(newEntityIds);
             renderGrid();
           }
         } catch (err) {
@@ -456,6 +500,36 @@
         // navigation actions per the keyboard-only input model.)
         tokenInvalid();
         evt.preventDefault();
+      } else if (evt.key === "ArrowRight") {
+        if (cards.length > 0) {
+           currentCardIndex = (currentCardIndex + 1) % cards.length;
+           renderGrid();
+        }
+      } else if (evt.key === "ArrowLeft") {
+        if (cards.length > 0) {
+           currentCardIndex = (currentCardIndex - 1 + cards.length) % cards.length;
+           renderGrid();
+        }
+      }
+    });
+
+    let touchStartX = 0;
+    document.addEventListener("touchstart", e => {
+      if (e.changedTouches.length) touchStartX = e.changedTouches[0].screenX;
+    });
+    document.addEventListener("touchend", e => {
+      if (!e.changedTouches.length) return;
+      let touchEndX = e.changedTouches[0].screenX;
+      if (touchEndX < touchStartX - 50) {
+         if (cards.length > 0) {
+             currentCardIndex = (currentCardIndex + 1) % cards.length;
+             renderGrid();
+         }
+      } else if (touchEndX > touchStartX + 50) {
+         if (cards.length > 0) {
+             currentCardIndex = (currentCardIndex - 1 + cards.length) % cards.length;
+             renderGrid();
+         }
       }
     });
 

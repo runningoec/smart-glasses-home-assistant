@@ -37,26 +37,39 @@ class SmartGlassesStore:
     def __init__(self, hass: HomeAssistant) -> None:
         self._hass = hass
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self._data: dict[str, Any] = {"entities": [], "pairings": {}}
+        self._data: dict[str, Any] = {"cards": [], "pairings": {}}
 
     async def async_load(self) -> None:
         loaded = await self._store.async_load()
         if loaded:
-            # Merge so newly-added fields (in later versions) get defaults.
-            self._data["entities"] = list(loaded.get("entities") or [])
             self._data["pairings"] = dict(loaded.get("pairings") or {})
+            if "cards" in loaded:
+                self._data["cards"] = list(loaded["cards"])
+            else:
+                # Migrate old 'entities' to a single 'Main' card
+                entities = loaded.get("entities") or []
+                if entities:
+                    self._data["cards"] = [
+                        {
+                            "id": "card_0",
+                            "name": "Main",
+                            "items": [{"type": "entity", "entity_id": e} for e in entities]
+                        }
+                    ]
+                else:
+                    self._data["cards"] = []
 
     async def async_save(self) -> None:
         await self._store.async_save(self._data)
 
-    # ---- entities --------------------------------------------------------
+    # ---- cards --------------------------------------------------------
 
     @property
-    def entities(self) -> list[str]:
-        return list(self._data["entities"])
+    def cards(self) -> list[dict[str, Any]]:
+        return list(self._data["cards"])
 
-    async def async_set_entities(self, entities: list[str]) -> None:
-        self._data["entities"] = list(entities)
+    async def async_set_cards(self, cards: list[dict[str, Any]]) -> None:
+        self._data["cards"] = cards
         await self.async_save()
 
     # ---- pairings --------------------------------------------------------
