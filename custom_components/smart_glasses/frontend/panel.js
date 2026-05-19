@@ -218,13 +218,25 @@ class SmartGlassesPanel extends HTMLElement {
   }
 
   async _approve(code) {
-    // Bind approval to (code, session_id). The panel already has the pairing
-    // list locally — look up the session_id for this code rather than asking
-    // the server to find one. If two pending pairings share a code (very
-    // rare), the user effectively picks via the panel's row order.
+    // Refresh pairings first. The cached list only updates on _loadAll, so
+    // if the user launched the glasses app AFTER opening the panel, the new
+    // pending pairing isn't in our cache yet — and we'd error out before
+    // even hitting the server.
+    try {
+      const pRes = await this._api("GET", "/pairings");
+      this._pairings = pRes.pairings ?? [];
+    } catch (err) {
+      // Refresh failed; fall through with whatever we have cached. The
+      // server-side check still guards against bogus approvals.
+      console.warn("pairings refresh before approve failed:", err);
+    }
+
+    // Bind approval to (code, session_id). The panel looks up the session_id
+    // locally so the user only has to type the code. If two pending pairings
+    // share a code (rare), the first row wins — user can revoke and retry.
     const match = this._pairings.find(p => !p.approved && p.code === code);
     if (!match) {
-      this._error = `No pending pairing with code ${code}.`;
+      this._error = `No pending pairing with code ${code}. Try clicking Revoke on any stale entries, or re-launch the glasses app for a fresh code.`;
       this._render();
       return;
     }
