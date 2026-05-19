@@ -1,42 +1,48 @@
 """HTTP views for the Smart Glasses integration.
 
-Three audiences hit these endpoints:
+Three audiences, three auth modes:
 
-1. **Glasses Web App** (no HA login). Calls:
-   - ``GET  /smart-glasses-app``         — fetch the HTML to render
-   - ``POST /api/smart_glasses/pair/start`` — request a pairing code
-   - ``GET  /api/smart_glasses/pair/{session_id}/token`` — poll until approved
-   - (After approval the glasses use the standard HA REST + websocket APIs
-      with the long-lived token they were given. No additional view needed.)
+1. **Glasses Web App pairing-bootstrap** (no auth). The brief window during
+   which a freshly-launched glasses app gets a pairing code and waits for it
+   to be approved:
+   - ``GET  /smart-glasses-app``                          — fetch the HTML
+   - ``POST /api/smart_glasses/pair/start``               — request a code
+   - ``GET  /api/smart_glasses/pair/{session_id}/token``  — poll for approval
 
-2. **Phone / desktop browser** (HA-logged-in user). Calls:
-   - ``GET  /api/smart_glasses/pairings`` — list pending + approved pairings
-   - ``POST /api/smart_glasses/pair/approve`` — approve a code, mint LLAT
-   - ``DELETE /api/smart_glasses/pair/{session_id}`` — revoke a pairing
-   - ``GET  /api/smart_glasses/cards`` — get the current card list (JSON)
-   - ``PUT  /api/smart_glasses/cards`` — save the card list (JSON)
-   - ``GET  /api/smart_glasses/cards/yaml`` — get current cards as YAML
-   - ``PUT  /api/smart_glasses/cards/yaml`` — save cards from a YAML body
-     (handy for getting an AI to author your dashboard for you)
+2. **Glasses Web App day-to-day** (Bearer auth with our session token).
+   After approval the glasses use these proxy endpoints — they never call
+   HA's native /api/* anymore, so the token's scope is exactly "the entities
+   and actions currently on a card":
+   - ``GET  /api/smart_glasses/glance/cards``
+   - ``GET  /api/smart_glasses/glance/states``    — only entities on cards
+   - ``POST /api/smart_glasses/glance/call_service`` — only services on cards
+   - ``WS   /api/smart_glasses/glance/ws``         — filtered state_changed
 
-3. **HA frontend custom panel** loads ``frontend/panel.js`` directly via the
-   route registered in ``__init__.py``.
+3. **Phone / desktop browser** (HA-logged-in user). The management surface:
+   - ``GET  /api/smart_glasses/pairings``
+   - ``POST /api/smart_glasses/pair/approve``     — bound to (code, session_id)
+   - ``DELETE /api/smart_glasses/pair/{session_id}``
+   - ``GET/PUT /api/smart_glasses/cards``
+   - ``GET/PUT /api/smart_glasses/cards/yaml``
+   - ``GET  /api/smart_glasses/audit``
+
+The custom panel's JS bundle is served by ``PanelJsView`` with no-store
+Cache-Control so CDN-fronted HA installs (Cloudflare etc.) pick up updates.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import string
 import time
-from datetime import timedelta
 from typing import Any
 
 import yaml
 from aiohttp import web
-from homeassistant.auth.models import TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 
 from .const import (
     API_PREFIX,
@@ -54,10 +60,6 @@ from .const import (
 from .store import SmartGlassesStore
 
 _LOGGER = logging.getLogger(__name__)
-
-# Token name shown in HA's Long-Lived Access Token list, helping the user
-# identify which pairing each token belongs to.
-_TOKEN_PREFIX = "Smart Glasses pairing "
 
 # Excludes ambiguous characters that look alike on small displays (O/0, I/1).
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -230,9 +232,13 @@ class PairStartView(HomeAssistantView):
 
 
 class PairTokenView(HomeAssistantView):
-    """Glasses poll this until the pairing is approved. Returns 202 while
-    pending, 200 with the token once approved, 404 if the session is unknown
-    (e.g. expired and pruned)."""
+    """Glasses poll this until the pairing is approved.
+
+    Returns 202 while pending, 200 with the plaintext token on the FIRST
+    poll after approval (and wipes the pickup), 410 Gone if the pickup has
+    already been collected (caller should re-pair), and 404 if the session
+    is unknown.
+    """
 
     url = f"{API_PREFIX}/pair/{{session_id}}/token"
     name = f"{DOMAIN}:pair_token"
@@ -240,14 +246,23 @@ class PairTokenView(HomeAssistantView):
 
     async def get(self, request: web.Request, session_id: str) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        p = _store(hass).get_pairing(session_id)
+        store = _store(hass)
+        p = store.get_pairing(session_id)
         if not p:
             return self.json_message("unknown session", status_code=404)
-        if not p["token"]:
+        if not p.get("token_hash"):
             return self.json({"status": "pending"}, status_code=202)
+        pickup = p.get("token_pickup")
+        if not pickup:
+            return self.json_message(
+                "token already collected — re-pair to get a fresh one",
+                status_code=410,
+            )
+        # Hand it over exactly once.
+        await store.async_clear_pickup(session_id)
         return self.json({
             "status": "approved",
-            "token": p["token"],
+            "token": pickup,
             "user_id": p["user_id"],
             "approved_at": p["approved_at"],
         })
@@ -316,23 +331,13 @@ class PairApproveView(HomeAssistantView):
         if user is None:
             return self.json_message("no user", status_code=401)
 
-        try:
-            refresh_token = await hass.auth.async_create_refresh_token(
-                user,
-                client_name=f"{_TOKEN_PREFIX}{pairing['session_id'][:8]}",
-                token_type=TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN,
-                access_token_expiration=timedelta(days=3650),
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.exception("LLAT creation failed")
-            return self.json_message(f"token mint failed: {err}", status_code=500)
-
-        access_token = hass.auth.async_create_access_token(refresh_token)
+        # Random opaque session token — ~256 bits. Hashed at rest, kept only
+        # on the glasses' localStorage in plaintext after the one-shot pickup.
+        token = secrets.token_urlsafe(32)
         await store.async_approve_pairing(
             session_id=pairing["session_id"],
             user_id=user.id,
-            refresh_id=refresh_token.id,
-            token=access_token,
+            token=token,
         )
         await store.async_audit(
             "pair_approved",
@@ -345,9 +350,10 @@ class PairApproveView(HomeAssistantView):
 
 
 class PairRevokeView(HomeAssistantView):
-    """Revoke a pairing: delete the refresh token in HA's auth manager (which
-    invalidates any access token derived from it) and remove the local
-    record."""
+    """Revoke a pairing: drop our local record. Because the session token
+    only exists in our store (as a hash) and on the glasses' localStorage,
+    deleting our record invalidates the token immediately — no separate
+    auth-manager dance like in the legacy LLAT design."""
 
     url = f"{API_PREFIX}/pair/{{session_id}}"
     name = f"{DOMAIN}:pair_revoke"
@@ -359,10 +365,7 @@ class PairRevokeView(HomeAssistantView):
         p = store.get_pairing(session_id)
         if not p:
             return self.json_message("unknown session", status_code=404)
-        if p.get("refresh_id"):
-            refresh = await hass.auth.async_get_refresh_token(p["refresh_id"])
-            if refresh is not None:
-                await hass.auth.async_remove_refresh_token(refresh)
+        had_token = bool(p.get("token_hash"))
         await store.async_delete_pairing(session_id)
         user = request["hass_user"]
         await store.async_audit(
@@ -371,7 +374,7 @@ class PairRevokeView(HomeAssistantView):
             user_name=getattr(user, "name", None),
             session_id=session_id,
             code=p.get("code"),
-            had_token=bool(p.get("token")),
+            had_token=had_token,
         )
         return self.json({"ok": True})
 
@@ -463,6 +466,209 @@ class CardsYamlView(HomeAssistantView):
         return self.json({"ok": True, "cards": cards})
 
 
+# ---------------------------------------------------------------------------
+# Glasses-facing proxy views — authenticated via the session token issued at
+# approval. The glasses never call HA's native /api/* directly any more, so
+# the token's blast radius is limited to what these endpoints expose.
+# ---------------------------------------------------------------------------
+
+
+def _glasses_pairing(request: web.Request, hass: HomeAssistant) -> dict[str, Any] | None:
+    """Authenticate a glasses request. Returns the pairing dict on success,
+    None on failure. Caller is responsible for sending 401 if None."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[7:].strip()
+    if not token:
+        return None
+    return _store(hass).find_pairing_by_token(token)
+
+
+def _card_entity_ids(cards: list[dict[str, Any]]) -> set[str]:
+    out: set[str] = set()
+    for c in cards:
+        for item in c.get("items", []):
+            if item.get("type") == "entity" and isinstance(item.get("entity_id"), str):
+                out.add(item["entity_id"])
+    return out
+
+
+def _service_call_allowed(
+    cards: list[dict[str, Any]], domain: str, service: str, target_eid: str | None
+) -> bool:
+    """A service call is only permitted if it matches something currently
+    on a card. Two cases:
+
+    - ``homeassistant.toggle`` against an ``entity`` item with the same
+      ``entity_id`` (the implicit "tap the cell" action).
+    - A ``call_service`` whose ``domain.service`` and ``target`` exactly
+      match an ``action`` item on some card.
+
+    Anything else is rejected — the token can't be used to fire arbitrary
+    HA services even if it's leaked from the glasses.
+    """
+    if not domain or not service:
+        return False
+    service_str = f"{domain}.{service}"
+    for card in cards:
+        for item in card.get("items", []):
+            t = item.get("type")
+            if t == "action" and item.get("action") == service_str:
+                # `None == None` covers the "no-target action, no-target call".
+                if item.get("target") == target_eid:
+                    return True
+            elif t == "entity" and service_str == "homeassistant.toggle":
+                if item.get("entity_id") == target_eid:
+                    return True
+    return False
+
+
+class GlanceCardsView(HomeAssistantView):
+    """Cards endpoint for the glasses — same payload as the panel's /cards
+    but auth is the glasses session token, not HA login."""
+
+    url = f"{API_PREFIX}/glance/cards"
+    name = f"{DOMAIN}:glance_cards"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        if not _glasses_pairing(request, hass):
+            return self.json_message("invalid token", status_code=401)
+        return self.json({"cards": _store(hass).cards})
+
+
+class GlanceStatesView(HomeAssistantView):
+    """States for the entities that appear on cards. Anything not on a card
+    is unreachable through this endpoint — the glasses token cannot enumerate
+    the rest of HA."""
+
+    url = f"{API_PREFIX}/glance/states"
+    name = f"{DOMAIN}:glance_states"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        if not _glasses_pairing(request, hass):
+            return self.json_message("invalid token", status_code=401)
+        wanted = _card_entity_ids(_store(hass).cards)
+        out = []
+        for eid in wanted:
+            s = hass.states.get(eid)
+            if s:
+                out.append(s.as_dict())
+        return self.json(out)
+
+
+class GlanceCallServiceView(HomeAssistantView):
+    """Scoped service-call proxy. Only services + targets present on a card
+    are accepted. Implements both the implicit toggle (when the glasses tap
+    an entity cell) and explicit action items."""
+
+    url = f"{API_PREFIX}/glance/call_service"
+    name = f"{DOMAIN}:glance_call_service"
+    requires_auth = False
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        if not _glasses_pairing(request, hass):
+            return self.json_message("invalid token", status_code=401)
+        body: dict[str, Any] = await request.json()
+        domain = body.get("domain")
+        service = body.get("service")
+        target = body.get("target") or {}
+        target_eid = target.get("entity_id") if isinstance(target, dict) else None
+        if not _service_call_allowed(_store(hass).cards, domain, service, target_eid):
+            return self.json_message("service call not permitted by card config", status_code=403)
+        try:
+            await hass.services.async_call(
+                domain=domain,
+                service=service,
+                target={"entity_id": target_eid} if target_eid else {},
+                blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("glance call_service failed")
+            return self.json_message(f"call_service failed: {err}", status_code=500)
+        return self.json({"ok": True})
+
+
+class GlanceWebSocketView(HomeAssistantView):
+    """Real-time state stream for the glasses.
+
+    Protocol (browser WebSocket API can't set headers, so auth rides on the
+    first message — same shape HA's own websocket uses):
+
+        →  {"type": "auth", "access_token": "..."}
+        ←  {"type": "auth_ok"} | {"type": "auth_invalid"}
+
+        ←  {"type": "state_changed", "entity_id": ..., "new_state": {...}}
+        ←  {"type": "state_changed", "entity_id": ..., "new_state": null}   # removed
+        ←  {"type": "ping"}                                                  # keepalive
+
+    Only state_changed events for entity_ids on cards are forwarded.
+    """
+
+    url = f"{API_PREFIX}/glance/ws"
+    name = f"{DOMAIN}:glance_ws"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.WebSocketResponse:
+        hass: HomeAssistant = request.app["hass"]
+        ws = web.WebSocketResponse(heartbeat=30)
+        await ws.prepare(request)
+
+        # First message is auth.
+        try:
+            first = await ws.receive(timeout=10)
+        except Exception:  # noqa: BLE001
+            await ws.close()
+            return ws
+        if first.type != web.WSMsgType.TEXT:
+            await ws.close()
+            return ws
+        try:
+            msg = json.loads(first.data)
+        except (json.JSONDecodeError, ValueError):
+            await ws.send_json({"type": "auth_invalid"})
+            await ws.close()
+            return ws
+        token = msg.get("access_token") or msg.get("token")
+        pairing = _store(hass).find_pairing_by_token(token) if token else None
+        if not pairing:
+            await ws.send_json({"type": "auth_invalid"})
+            await ws.close()
+            return ws
+        await ws.send_json({"type": "auth_ok"})
+
+        @callback
+        def state_listener(event):
+            eid = event.data.get("entity_id")
+            wanted = _card_entity_ids(_store(hass).cards)
+            if eid not in wanted:
+                return
+            new_state = event.data.get("new_state")
+            payload = {
+                "type": "state_changed",
+                "entity_id": eid,
+                "new_state": new_state.as_dict() if new_state else None,
+            }
+            hass.async_create_task(ws.send_json(payload))
+
+        remove = hass.bus.async_listen("state_changed", state_listener)
+        try:
+            async for incoming in ws:
+                if incoming.type == web.WSMsgType.ERROR:
+                    break
+                # We don't expect any messages after auth, but tolerate pings.
+                if incoming.type == web.WSMsgType.TEXT and incoming.data == "ping":
+                    await ws.send_str("pong")
+        finally:
+            remove()
+        return ws
+
+
 class AuditView(HomeAssistantView):
     """Latest audit log entries (newest first). Used by the panel to show
     recent approvals, revocations, and config changes."""
@@ -487,4 +693,10 @@ ALL_VIEWS: list[type[HomeAssistantView]] = [
     CardsView,
     CardsYamlView,
     AuditView,
+    # Glasses-token-authenticated proxies — replace the glasses' old direct
+    # access to HA's native /api/* with scope-limited equivalents.
+    GlanceCardsView,
+    GlanceStatesView,
+    GlanceCallServiceView,
+    GlanceWebSocketView,
 ]

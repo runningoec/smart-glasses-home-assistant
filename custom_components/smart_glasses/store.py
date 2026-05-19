@@ -1,29 +1,33 @@
 """Persistent storage for Smart Glasses.
 
-Two pieces of state survive restarts:
+State that survives restarts:
 
-- **entities**: the list of entity_ids the user selected in the management
-  panel. The glasses Web App renders these as its adaptive grid.
+- **cards**: dashboard cards the panel manages.
 - **pairings**: one record per glasses-app session. A pairing starts when
   the glasses call ``/api/smart_glasses/pair/start`` and gets a short code.
-  An HA-logged-in user can then "approve" that code from the management
-  panel; on approval we mint a Long-Lived Access Token (LLAT) owned by the
-  approving user and store its refresh-token id so it can be revoked later.
+  An HA-logged-in user "approves" that code from the management panel; on
+  approval we generate a 32-byte random session token, hash it, and store
+  the *hash*. The plaintext token is briefly kept in ``token_pickup`` until
+  the glasses fetch it through PairTokenView, after which it's wiped — so
+  the only place the plaintext lives long-term is the glasses' localStorage.
+- **audit**: ring buffer of recent panel actions, capped at AUDIT_CAP.
 
 Each pairing dict:
     {
-      "session_id":  str,                # opaque, glasses-known
-      "code":        str,                # short human-typed code (e.g. "ABCDEF")
-      "user_id":     str | None,         # HA user id that approved (None before)
-      "refresh_id": str | None,          # HA refresh-token id, for revocation
-      "token":       str | None,         # the LLAT itself (the glasses fetch this)
-      "created_at":  float,              # epoch seconds
-      "approved_at": float | None,
+      "session_id":   str,                # opaque, glasses-known
+      "code":         str,                # short human-typed code (e.g. "ABCDEF")
+      "user_id":      str | None,         # HA user id that approved (None before)
+      "token_hash":   str | None,         # sha256(token) — what we compare against
+      "token_pickup": str | None,         # plaintext, wiped on first PairTokenView fetch
+      "created_at":   float,              # epoch seconds
+      "approved_at":  float | None,
     }
 """
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import time
 from typing import Any
 
@@ -31,6 +35,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_VERSION
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def hash_token(token: str) -> str:
+    """SHA-256 hex digest. Used both at approval (to store) and on every
+    glasses-token authentication (to compare against the stored hash)."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 class SmartGlassesStore:
@@ -62,6 +74,40 @@ class SmartGlassesStore:
                     ]
                 else:
                     self._data["cards"] = []
+        await self._migrate_legacy_llat_pairings()
+
+    async def _migrate_legacy_llat_pairings(self) -> None:
+        """One-shot cleanup for installs that pre-date the hashed-token model.
+
+        v0.5 and earlier minted an HA Long-Lived Access Token at approval and
+        stored it on the pairing record. v0.6 moved to opaque session tokens
+        validated by hash. Revoke the leftover LLAT refresh_tokens here so a
+        glasses device still holding the old plaintext can't keep hitting HA.
+        Old pairings are then either upgraded in shape (if we somehow have a
+        hash already) or removed entirely — which forces a fresh re-pair on
+        upgrade and is what we want.
+        """
+        legacy = [
+            (sid, p) for sid, p in self._data["pairings"].items()
+            if "refresh_id" in p or "token" in p
+        ]
+        if not legacy:
+            return
+        _LOGGER.warning(
+            "smart_glasses: migrating %d legacy LLAT pairing(s) — devices must re-pair",
+            len(legacy),
+        )
+        for sid, p in legacy:
+            refresh_id = p.get("refresh_id")
+            if refresh_id:
+                try:
+                    refresh = await self._hass.auth.async_get_refresh_token(refresh_id)
+                    if refresh is not None:
+                        await self._hass.auth.async_remove_refresh_token(refresh)
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("could not revoke legacy refresh token %s", refresh_id)
+            self._data["pairings"].pop(sid, None)
+        await self.async_save()
 
     async def async_save(self) -> None:
         await self._store.async_save(self._data)
@@ -96,8 +142,8 @@ class SmartGlassesStore:
             "session_id": session_id,
             "code": code,
             "user_id": None,
-            "refresh_id": None,
-            "token": None,
+            "token_hash": None,
+            "token_pickup": None,
             "created_at": time.time(),
             "approved_at": None,
         }
@@ -109,18 +155,39 @@ class SmartGlassesStore:
         self,
         session_id: str,
         user_id: str,
-        refresh_id: str,
         token: str,
     ) -> dict[str, Any]:
+        """Mark a pairing approved. ``token`` is the freshly-minted plaintext
+        session token; we store its hash and keep the plaintext in
+        ``token_pickup`` so the glasses can fetch it on their next poll."""
         p = self._data["pairings"].get(session_id)
         if not p:
             raise KeyError(session_id)
         p["user_id"] = user_id
-        p["refresh_id"] = refresh_id
-        p["token"] = token
+        p["token_hash"] = hash_token(token)
+        p["token_pickup"] = token
         p["approved_at"] = time.time()
         await self.async_save()
         return p
+
+    async def async_clear_pickup(self, session_id: str) -> None:
+        """Wipe the plaintext pickup token after the glasses have fetched it.
+        The hash stays for ongoing auth; the plaintext can't be retrieved
+        from storage anymore."""
+        p = self._data["pairings"].get(session_id)
+        if p and p.get("token_pickup"):
+            p["token_pickup"] = None
+            await self.async_save()
+
+    def find_pairing_by_token(self, token: str) -> dict[str, Any] | None:
+        """Look up a pairing by Bearer token — used on every glasses-API call."""
+        if not token:
+            return None
+        h = hash_token(token)
+        for p in self._data["pairings"].values():
+            if p.get("token_hash") == h:
+                return p
+        return None
 
     async def async_delete_pairing(self, session_id: str) -> dict[str, Any] | None:
         p = self._data["pairings"].pop(session_id, None)

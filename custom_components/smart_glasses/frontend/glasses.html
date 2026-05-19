@@ -175,7 +175,6 @@
     let currentCardIndex = 0;
     let states = new Map();      // entity_id -> state object (live)
     let ws = null;
-    let wsMsgId = 1;
     let reconnectAttempts = 0;
     let reconnectTimer = null;
     let pairTimer = null;
@@ -243,86 +242,84 @@
       });
     }
 
-    // ----- HA REST + websocket -------------------------------------------
+    // ----- Smart Glasses proxy API ---------------------------------------
+    // Glasses-side calls never hit HA's native /api/* anymore. The token's
+    // scope is limited to what the proxy endpoints expose (cards + entities
+    // on cards + services that match an action on a card).
 
     async function fetchCards() {
-      const res = await fetch("/api/smart_glasses/cards", {
+      const res = await fetch("/api/smart_glasses/glance/cards", {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
-        if (res.status === 401) {
-          tokenInvalid();
-          return [];
-        }
+        if (res.status === 401) { tokenInvalid(); return []; }
         throw new Error(`cards ${res.status}`);
       }
       const data = await res.json();
       return data.cards ?? [];
     }
 
-    function getAllEntityIds(cards) {
-      const ids = new Set();
-      for (const c of cards) {
-        for (const item of c.items || []) {
-          if (item.type === "entity") ids.add(item.entity_id);
-        }
-      }
-      return Array.from(ids);
-    }
-
-    async function fetchStatesFor(entityIds) {
-      // HA REST: GET /api/states returns ALL states. For 1-8 ids we filter
-      // client-side; cheap enough that fetching individually is overkill.
-      const res = await fetch("/api/states", {
+    async function fetchStates() {
+      // Server already filters to entities on cards — no client-side
+      // filtering needed.
+      const res = await fetch("/api/smart_glasses/glance/states", {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
-        if (res.status === 401) tokenInvalid();
+        if (res.status === 401) { tokenInvalid(); return new Map(); }
         throw new Error(`states ${res.status}`);
       }
       const all = await res.json();
-      const wanted = new Set(entityIds);
       const m = new Map();
-      for (const s of all) if (wanted.has(s.entity_id)) m.set(s.entity_id, s);
+      for (const s of all) m.set(s.entity_id, s);
       return m;
+    }
+
+    async function callService(domain, service, targetEid) {
+      const body = { domain, service };
+      if (targetEid) body.target = { entity_id: targetEid };
+      const res = await fetch("/api/smart_glasses/glance/call_service", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) { tokenInvalid(); return; }
+      if (res.status === 403) {
+        setStatus("Action not allowed");
+        return;
+      }
+      if (!res.ok) {
+        setStatus(`call_service ${res.status}`);
+      }
     }
 
     function connectWebsocket() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      ws = new WebSocket(`${proto}//${location.host}/api/websocket`);
+      ws = new WebSocket(`${proto}//${location.host}/api/smart_glasses/glance/ws`);
 
       ws.addEventListener("open", () => {
-        // HA's websocket protocol expects {type: 'auth', access_token: ...}
-        // after the server sends auth_required. We just send our auth on
-        // open; HA tolerates either order.
+        // Our protocol: first message is auth. Server replies auth_ok or
+        // auth_invalid, then streams filtered state_changed events.
+        ws.send(JSON.stringify({ type: "auth", access_token: token }));
       });
 
       ws.addEventListener("message", (evt) => {
         let msg;
         try { msg = JSON.parse(evt.data); } catch { return; }
-        if (msg.type === "auth_required") {
-          ws.send(JSON.stringify({ type: "auth", access_token: token }));
-        } else if (msg.type === "auth_ok") {
+        if (msg.type === "auth_ok") {
           reconnectAttempts = 0;
           setStatus("Connected");
-          // Subscribe to state_changed. We filter client-side because HA's
-          // subscribe_events doesn't support an entity_id filter.
-          ws.send(JSON.stringify({
-            id: wsMsgId++,
-            type: "subscribe_events",
-            event_type: "state_changed",
-          }));
         } else if (msg.type === "auth_invalid") {
           tokenInvalid();
-        } else if (msg.type === "event") {
-          const ev = msg.event;
-          if (ev?.event_type !== "state_changed") return;
-          const eid = ev.data?.entity_id;
-          if (!eid || !getAllEntityIds(cards).includes(eid)) return;
-          if (ev.data.new_state) {
-            states.set(eid, ev.data.new_state);
+        } else if (msg.type === "state_changed") {
+          if (!msg.entity_id) return;
+          if (msg.new_state) {
+            states.set(msg.entity_id, msg.new_state);
           } else {
-            states.delete(eid);
+            states.delete(msg.entity_id);
           }
           renderGrid();
         }
@@ -434,34 +431,17 @@
 
     $grid.addEventListener("click", (evt) => {
       const cell = evt.target.closest(".cell");
-      if (!cell || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!cell) return;
       const idx = cell.dataset.idx;
       if (idx == null || cards.length === 0) return;
-      
+
       const item = cards[currentCardIndex].items[idx];
       if (item.type === "action") {
         const parts = item.action.split(".");
         if (parts.length !== 2) return;
-        const payload = {
-          id: wsMsgId++,
-          type: "call_service",
-          domain: parts[0],
-          service: parts[1]
-        };
-        if (item.target) {
-          payload.target = { entity_id: item.target };
-        }
-        ws.send(JSON.stringify(payload));
-      } else {
-        const eid = item.entity_id;
-        if (!eid) return;
-        ws.send(JSON.stringify({
-          id: wsMsgId++,
-          type: "call_service",
-          domain: "homeassistant",
-          service: "toggle",
-          target: { entity_id: eid }
-        }));
+        callService(parts[0], parts[1], item.target ?? null);
+      } else if (item.entity_id) {
+        callService("homeassistant", "toggle", item.entity_id);
       }
     });
 
@@ -469,13 +449,13 @@
 
     async function startGlance() {
       cards = await fetchCards();
-      const entityIds = getAllEntityIds(cards);
-      states = await fetchStatesFor(entityIds);
+      states = await fetchStates();
       renderGrid();
       connectWebsocket();
 
-      // Defensive: HA websocket usually keeps us current but we resync the
-      // cards LIST every minute in case the panel changed it.
+      // The websocket keeps states live, but the CARD list itself isn't
+      // pushed — admin edits in the panel only show up if we poll. Every
+      // minute is plenty for a glance dashboard.
       clearInterval(nextStatesRefresh);
       nextStatesRefresh = setInterval(async () => {
         try {
@@ -483,8 +463,7 @@
           if (JSON.stringify(freshCards) !== JSON.stringify(cards)) {
             cards = freshCards;
             if (currentCardIndex >= cards.length) currentCardIndex = 0;
-            const newEntityIds = getAllEntityIds(cards);
-            states = await fetchStatesFor(newEntityIds);
+            states = await fetchStates();
             renderGrid();
           }
         } catch (err) {

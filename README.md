@@ -86,11 +86,25 @@ the approving user's profile).
 
 ## Pairing security
 
-The glasses get a Home Assistant Long-Lived Access Token (LLAT) owned by
-the user who approved the pairing. That token has full HA access — same as
-any LLAT you'd issue from your profile. If a glasses pair is lost or
-compromised, revoke it from the management panel (or directly under your
-HA profile's *Long-lived access tokens* list).
+Approval mints a 256-bit random session token. Only the **hash** of that
+token is stored on your HA — the plaintext is handed to the glasses once
+through `/pair/<id>/token` and then wiped from server-side state. Any
+glasses-side API call is Bearer-authenticated against the hash.
+
+The token's scope is exactly **the entities + actions currently on a card**.
+It cannot enumerate the rest of your HA, can't fire arbitrary services,
+can't subscribe to events for unrelated entities. The glasses never talk to
+HA's native `/api/*` — every call goes through scope-limited proxies:
+
+| Glasses call | Backend behavior |
+|---|---|
+| `GET /api/smart_glasses/glance/cards`        | Returns current cards. |
+| `GET /api/smart_glasses/glance/states`       | Returns states **only** for entity_ids that appear on a card. |
+| `POST /api/smart_glasses/glance/call_service` | Rejects any (domain, service, target) tuple that isn't either (a) `homeassistant.toggle` against an entity item on a card, or (b) an exact match for an action item on a card. |
+| `WS  /api/smart_glasses/glance/ws`            | First message authenticates; thereafter streams `state_changed` events filtered to card entities. |
+
+Revoking from the panel deletes the hash. The next glasses-side call gets
+401 and re-pair kicks in.
 
 ## Status
 
