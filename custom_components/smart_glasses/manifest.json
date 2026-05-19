@@ -1,7 +1,7 @@
 {
   "domain": "smart_glasses",
   "name": "Smart Glasses",
-  "version": "0.6.5",
+  "version": "0.7.0",
   "documentation": "https://github.com/runningoec/hacs-smart-glasses",
   "issue_tracker": "https://github.com/runningoec/hacs-smart-glasses/issues",
   "codeowners": ["@runningoec"],

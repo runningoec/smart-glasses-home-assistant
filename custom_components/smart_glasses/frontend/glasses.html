@@ -36,6 +36,27 @@
 
     #app { width: 600px; height: 600px; display: flex; flex-direction: column; }
 
+    /* Tab strip across the top — shows card names. The current card is
+       highlighted; while focusMode === "tabs" the same tab also gets a
+       bright outline so the user knows arrow keys move card selection.
+       Hidden in pair / empty modes. */
+    #tabs {
+      display: flex; gap: 6px; padding: 8px 10px 0;
+      overflow-x: hidden; flex-shrink: 0;
+    }
+    .tab {
+      flex: 1 1 0; min-width: 0;
+      padding: 6px 10px; border-radius: 8px;
+      background: rgba(255,255,255,0.05);
+      border: 2px solid transparent;
+      font-size: 16px; font-weight: 600; color: var(--dim);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      text-align: center; cursor: pointer;
+      transition: background 0.1s, color 0.1s, border-color 0.1s;
+    }
+    .tab.active   { background: rgba(255,255,255,0.12); color: var(--fg); }
+    .tab.focused  { border-color: var(--fg); }
+
     /* Pairing screen — first launch only. */
     #pair {
       flex: 1; display: flex; flex-direction: column;
@@ -51,10 +72,11 @@
     #pair p { font-size: 22px; color: var(--dim); }
     #pair .progress { margin-top: 32px; font-size: 18px; color: var(--dim); }
 
-    /* Glance grid — after pairing. */
+    /* Glance grid — after pairing. Width is fixed (600px viewport) but
+       height is whatever's left after the tab strip. */
     #grid {
-      flex: 1; display: grid; gap: 6px; padding: 12px;
-      width: 600px; height: 600px;
+      flex: 1; display: grid; gap: 6px; padding: 10px;
+      width: 600px; min-height: 0;
     }
     /* Adaptive layout. Empty grid says we're showing the empty-state instead. */
     #grid[data-count="1"] { grid-template: 1fr / 1fr; }
@@ -100,6 +122,8 @@
     .cell[data-on="true"]  .value { color: var(--on); }
     .cell[data-on="false"] .value { color: var(--off); }
     .cell[data-stale="true"] .value { color: var(--stale); }
+    /* Bright outline on the focused cell while focusMode === "cells". */
+    .cell.focused { border-color: var(--fg); background: rgba(255,255,255,0.12); }
 
     #empty {
       flex: 1; display: flex; flex-direction: column;
@@ -128,6 +152,7 @@
       <div class="progress" id="pair-progress">Waiting for approval…</div>
     </section>
 
+    <section id="tabs" hidden></section>
     <section id="grid" hidden></section>
 
     <section id="empty" hidden>
@@ -164,6 +189,7 @@
     const $pairCode = document.getElementById("pair-code");
     const $pairHost = document.getElementById("pair-host");
     const $pairProgress = document.getElementById("pair-progress");
+    const $tabs = document.getElementById("tabs");
     const $grid = document.getElementById("grid");
     const $empty = document.getElementById("empty");
     const $status = document.getElementById("status");
@@ -184,6 +210,12 @@
     let sessionId = cleanLS(LS_SESSION_KEY);
     let cards = [];              // configured cards
     let currentCardIndex = 0;
+    // Two-mode keyboard navigation:
+    //   "tabs"  — Left/Right cycles cards, Down/Enter dives into items.
+    //   "cells" — Up/Down/Left/Right walks items, Enter triggers, Esc goes
+    //             back to tabs.
+    let focusMode = "tabs";
+    let focusedCellIndex = 0;
     let states = new Map();      // entity_id -> state object (live)
     let ws = null;
     let reconnectAttempts = 0;
@@ -414,6 +446,7 @@
 
     function showPanel(name) {
       $pair.hidden = name !== "pair";
+      $tabs.hidden = name !== "grid";
       $grid.hidden = name !== "grid";
       $empty.hidden = name !== "empty";
     }
@@ -432,18 +465,39 @@
       return unit ? `${v} ${unit}` : v;
     }
 
+    function renderTabs() {
+      if (cards.length === 0) {
+        $tabs.innerHTML = "";
+        return;
+      }
+      $tabs.innerHTML = cards.map((c, i) => {
+        const classes = ["tab"];
+        if (i === currentCardIndex) classes.push("active");
+        if (i === currentCardIndex && focusMode === "tabs") classes.push("focused");
+        return `<div class="${classes.join(" ")}" data-tab-idx="${i}">${esc(c.name)}</div>`;
+      }).join("");
+    }
+
     function renderGrid() {
       if (cards.length === 0 || !cards[currentCardIndex] || !cards[currentCardIndex].items || cards[currentCardIndex].items.length === 0) {
+        renderTabs();
         showPanel("empty");
         return;
       }
+      // Clamp focusedCellIndex so it stays valid as cards / items change.
       const card = cards[currentCardIndex];
       const items = card.items;
+      if (focusedCellIndex >= items.length) focusedCellIndex = items.length - 1;
+      if (focusedCellIndex < 0) focusedCellIndex = 0;
+
+      renderTabs();
+
       $grid.dataset.count = String(items.length);
       $grid.innerHTML = items.map((item, idx) => {
+        const focused = (focusMode === "cells" && idx === focusedCellIndex) ? " focused" : "";
         if (item.type === "action") {
           return `
-            <div class="cell" data-idx="${idx}" data-type="action" data-on="unset" data-stale="false">
+            <div class="cell${focused}" data-idx="${idx}" data-type="action" data-on="unset" data-stale="false">
               <div class="name">${esc(item.name)}</div>
               <div class="value">ACT</div>
             </div>
@@ -457,7 +511,7 @@
                       : s?.state === "off" || s?.state === "closed" ? "false"
                       : "unset";
           return `
-            <div class="cell" data-idx="${idx}" data-type="entity" data-eid="${esc(eid)}" data-on="${onAttr}" data-stale="${stale}">
+            <div class="cell${focused}" data-idx="${idx}" data-type="entity" data-eid="${esc(eid)}" data-on="${onAttr}" data-stale="${stale}">
               <div class="name">${esc(name)}</div>
               <div class="value">${s ? esc(fmtState(s)) : "—"}</div>
             </div>
@@ -467,17 +521,23 @@
       showPanel("grid");
     }
 
-    function setStatus(txt) {
-      $status.textContent = txt || "";
+    // Common helpers for nav.
+    function switchCard(delta) {
+      if (cards.length === 0) return;
+      currentCardIndex = (currentCardIndex + delta + cards.length) % cards.length;
+      focusedCellIndex = 0;
+      renderGrid();
     }
 
-    $grid.addEventListener("click", (evt) => {
-      const cell = evt.target.closest(".cell");
-      if (!cell) return;
-      const idx = cell.dataset.idx;
-      if (idx == null || cards.length === 0) return;
+    function triggerFocusedCell() {
+      if (focusMode !== "cells" || cards.length === 0) return;
+      const items = cards[currentCardIndex]?.items ?? [];
+      const item = items[focusedCellIndex];
+      if (!item) return;
+      fireItem(item);
+    }
 
-      const item = cards[currentCardIndex].items[idx];
+    function fireItem(item) {
       if (item.type === "action") {
         const parts = item.action.split(".");
         if (parts.length !== 2) return;
@@ -485,6 +545,37 @@
       } else if (item.entity_id) {
         callService("homeassistant", "toggle", item.entity_id);
       }
+    }
+
+    function setStatus(txt) {
+      $status.textContent = txt || "";
+    }
+
+    // Pointer interactions work as a direct fast-path: click a tab to
+    // switch cards, click a cell to fire it. This is independent of the
+    // keyboard focus model — useful when previewing in a browser, and
+    // harmless on glasses (no pointer events fire there).
+    $tabs.addEventListener("click", (evt) => {
+      const tab = evt.target.closest(".tab");
+      if (!tab) return;
+      const idx = Number(tab.dataset.tabIdx);
+      if (Number.isNaN(idx)) return;
+      currentCardIndex = idx;
+      focusMode = "tabs";
+      focusedCellIndex = 0;
+      renderGrid();
+    });
+    $grid.addEventListener("click", (evt) => {
+      const cell = evt.target.closest(".cell");
+      if (!cell || cards.length === 0) return;
+      const idx = Number(cell.dataset.idx);
+      const item = cards[currentCardIndex]?.items?.[idx];
+      if (!item) return;
+      // Move focus to the tapped cell, then fire it.
+      focusMode = "cells";
+      focusedCellIndex = idx;
+      renderGrid();
+      fireItem(item);
     });
 
     // ----- Bootstrap ------------------------------------------------------
@@ -524,43 +615,107 @@
       }
     }
 
-    // Allow Escape to clear credentials (useful for testing/re-pairing).
+    // ----- Keyboard nav (Neural Band + browser preview) ------------------
+    //
+    //   tabs mode:   ←/→ change card  ·  ↓ or Enter enter cells  ·
+    //                Shift+Esc force re-pair
+    //   cells mode:  ↑/↓ walk items   ·  ←/→ also walk items     ·
+    //                Enter trigger item · Esc back to tabs · Shift+Esc re-pair
     document.addEventListener("keydown", (evt) => {
       if (evt.key === "Escape" && evt.shiftKey) {
-        // Shift+Escape: hard reset. (Plain Escape is reserved for future
-        // navigation actions per the keyboard-only input model.)
         tokenInvalid();
         evt.preventDefault();
-      } else if (evt.key === "ArrowRight") {
-        if (cards.length > 0) {
-           currentCardIndex = (currentCardIndex + 1) % cards.length;
-           renderGrid();
+        return;
+      }
+      if (cards.length === 0) return;
+
+      if (focusMode === "tabs") {
+        if (evt.key === "ArrowLeft")       { switchCard(-1); evt.preventDefault(); }
+        else if (evt.key === "ArrowRight") { switchCard( 1); evt.preventDefault(); }
+        else if (evt.key === "ArrowDown" || evt.key === "Enter") {
+          const items = cards[currentCardIndex]?.items ?? [];
+          if (items.length > 0) {
+            focusMode = "cells";
+            focusedCellIndex = 0;
+            renderGrid();
+          }
+          evt.preventDefault();
         }
+        return;
+      }
+
+      // cells mode
+      const items = cards[currentCardIndex]?.items ?? [];
+      if (items.length === 0) {
+        focusMode = "tabs";
+        renderGrid();
+        return;
+      }
+      if (evt.key === "Escape") {
+        focusMode = "tabs";
+        renderGrid();
+        evt.preventDefault();
+      } else if (evt.key === "ArrowUp") {
+        if (focusedCellIndex === 0) {
+          focusMode = "tabs";
+        } else {
+          focusedCellIndex--;
+        }
+        renderGrid();
+        evt.preventDefault();
+      } else if (evt.key === "ArrowDown") {
+        focusedCellIndex = Math.min(items.length - 1, focusedCellIndex + 1);
+        renderGrid();
+        evt.preventDefault();
       } else if (evt.key === "ArrowLeft") {
-        if (cards.length > 0) {
-           currentCardIndex = (currentCardIndex - 1 + cards.length) % cards.length;
-           renderGrid();
-        }
+        focusedCellIndex = (focusedCellIndex - 1 + items.length) % items.length;
+        renderGrid();
+        evt.preventDefault();
+      } else if (evt.key === "ArrowRight") {
+        focusedCellIndex = (focusedCellIndex + 1) % items.length;
+        renderGrid();
+        evt.preventDefault();
+      } else if (evt.key === "Enter") {
+        triggerFocusedCell();
+        evt.preventDefault();
       }
     });
 
-    let touchStartX = 0;
-    document.addEventListener("touchstart", e => {
-      if (e.changedTouches.length) touchStartX = e.changedTouches[0].screenX;
-    });
-    document.addEventListener("touchend", e => {
+    // ----- Touch swipes (browser preview / future touch hardware) --------
+    // Horizontal swipe changes cards (mirrors Left/Right keys).
+    // Vertical swipe enters / exits cells mode.
+    let touchStartX = 0, touchStartY = 0;
+    document.addEventListener("touchstart", (e) => {
       if (!e.changedTouches.length) return;
-      let touchEndX = e.changedTouches[0].screenX;
-      if (touchEndX < touchStartX - 50) {
-         if (cards.length > 0) {
-             currentCardIndex = (currentCardIndex + 1) % cards.length;
-             renderGrid();
-         }
-      } else if (touchEndX > touchStartX + 50) {
-         if (cards.length > 0) {
-             currentCardIndex = (currentCardIndex - 1 + cards.length) % cards.length;
-             renderGrid();
-         }
+      touchStartX = e.changedTouches[0].screenX;
+      touchStartY = e.changedTouches[0].screenY;
+    });
+    document.addEventListener("touchend", (e) => {
+      if (!e.changedTouches.length || cards.length === 0) return;
+      const dx = e.changedTouches[0].screenX - touchStartX;
+      const dy = e.changedTouches[0].screenY - touchStartY;
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+      const THRESHOLD = 50;
+      if (adx < THRESHOLD && ady < THRESHOLD) return;
+      if (adx > ady) {
+        // Horizontal — switch cards.
+        switchCard(dx < 0 ? 1 : -1);
+      } else if (dy > 0) {
+        // Swipe down — enter cells mode if at tabs.
+        if (focusMode === "tabs") {
+          const items = cards[currentCardIndex]?.items ?? [];
+          if (items.length > 0) {
+            focusMode = "cells";
+            focusedCellIndex = 0;
+            renderGrid();
+          }
+        }
+      } else {
+        // Swipe up — back to tabs.
+        if (focusMode === "cells") {
+          focusMode = "tabs";
+          renderGrid();
+        }
       }
     });
 
