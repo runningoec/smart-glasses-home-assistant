@@ -27,24 +27,28 @@ entities live.
   running, no secrets to rotate. Stops when HA stops; restarts with it.
 - **Distributable**. Once installed via HACS, anyone with HA can use this.
 
-## Install (manual, until merged into HACS default)
+## Install
 
-1. Copy the `custom_components/smart_glasses/` folder into your HA's
-   `config/custom_components/` directory.
-2. Restart Home Assistant.
-3. Settings → Devices & Services → **Add Integration** → search for
-   "Smart Glasses" → add. (Or install via HACS once added to the default
-   store; in either case the integration must be added once after install.)
-4. Navigate to `<your-ha>/smart-glasses` in your browser — pick up to 8
-   entities, save.
-5. Register your glasses Web App with Meta:
+1. **HACS** → ⋮ → **Custom repositories** → URL
+   `https://github.com/runningoec/hacs-smart-glasses`, category **Integration** → **Add**.
+2. Find "Smart Glasses" in HACS → **Download**.
+3. Restart Home Assistant when prompted.
+4. **Settings → Devices & Services → + Add Integration → "Smart Glasses"** —
+   one click, no questions. The panel appears in your sidebar.
+
+Then to finish setup:
+
+5. Open the **Smart Glasses** panel in the sidebar → pick up to 8 entities → Save.
+6. Register the glasses-side Web App URL with Meta:
    - Wearables Developer Center → your project → Web App URL:
      `https://<your-ha-public-domain>/smart-glasses-app`
-   - HA must be reachable on HTTPS (Nabu Casa / Cloudflare Tunnel / your own
-     reverse proxy — whatever you already use to reach HA from outside).
-6. Open the Web App on the glasses → short code shown → in your phone's
-   browser go to `<your-ha>/smart-glasses` and click **Approve pairing**
-   for that code.
+   - HA needs to be reachable on HTTPS (Nabu Casa, Cloudflare Tunnel, or
+     your own reverse proxy — whatever you already use to reach HA from
+     outside).
+7. Load the Web App on the glasses → a 6-character pairing code appears →
+   from your phone, open the Smart Glasses panel and type the code in the
+   **Pairings** section → **Approve**. The glasses pick up the access token
+   on their next poll and switch to the live grid.
 
 ## Pairing security
 

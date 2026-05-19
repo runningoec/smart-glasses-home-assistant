@@ -24,7 +24,8 @@ class SmartGlassesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._async_current_entries():
             return self.async_abort(reason="single_instance_allowed")
 
-        if user_input is not None:
-            return self.async_create_entry(title="Smart Glasses", data={})
-
-        return self.async_show_form(step_id="user")
+        # No fields to ask about, so finish on the first call. The user clicking
+        # "Smart Glasses" in the Add Integration dialog completes the install in
+        # one step — they land back on the integrations page with the panel
+        # already in the sidebar.
+        return self.async_create_entry(title="Smart Glasses", data={})
