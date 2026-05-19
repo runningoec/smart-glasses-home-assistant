@@ -194,6 +194,18 @@ class SmartGlassesPanel extends HTMLElement {
 
     const selectedSet = new Set(this._entities);
 
+    // Suggest the public Web App URL we'd register with Meta. If the user is
+    // viewing the panel from localhost/HTTP we can't recommend their current
+    // origin (Meta requires HTTPS reachable from the open internet), so we
+    // fall back to a placeholder they have to replace.
+    const origin = location.origin;
+    const originLooksPublic = location.protocol === "https:" &&
+      !/^(localhost|127\.|10\.|192\.168\.|0\.0\.0\.0|\[?::1\]?)/.test(location.hostname);
+    const webAppUrl = originLooksPublic
+      ? `${origin}/smart-glasses-app`
+      : `https://<your-ha-public-domain>/smart-glasses-app`;
+    const setupOpen = this._pairings.length === 0 ? "open" : "";
+
     this.innerHTML = `
       <style>
         :host, .root { color: var(--primary-text-color); }
@@ -211,6 +223,31 @@ class SmartGlassesPanel extends HTMLElement {
           color: var(--primary-text-color); border: 1px solid var(--divider-color, #444);
           border-radius: 8px;
         }
+        details.setup > summary {
+          cursor: pointer; list-style: none; font-size: 20px; font-weight: 600;
+          padding: 0 0 4px;
+          display: flex; align-items: center; justify-content: space-between;
+        }
+        details.setup > summary::after { content: "▾"; font-size: 16px; color: var(--secondary-text-color); }
+        details.setup[open] > summary::after { content: "▴"; }
+        details.setup > summary::-webkit-details-marker { display: none; }
+        ol.steps { padding-left: 22px; margin: 12px 0 0; }
+        ol.steps li { margin: 8px 0; line-height: 1.5; }
+        ol.steps code { background: var(--secondary-background-color, #2a2a2a); padding: 2px 6px; border-radius: 4px; }
+        .url-box {
+          display: flex; align-items: stretch; gap: 8px; margin: 12px 0;
+        }
+        .url-box code {
+          flex: 1; padding: 12px 14px; font-family: ui-monospace, "SF Mono", monospace;
+          background: var(--secondary-background-color, #2a2a2a); border-radius: 8px;
+          overflow-x: auto; white-space: nowrap; user-select: all;
+        }
+        .url-box.placeholder code { color: var(--warning-color, #fc6); }
+        .copy-toast {
+          display: inline-block; margin-left: 8px; font-size: 12px;
+          color: var(--success-color, #4caf50); opacity: 0; transition: opacity 0.2s;
+        }
+        .copy-toast.visible { opacity: 1; }
         .entity-list {
           max-height: 360px; overflow-y: auto; margin-top: 12px;
           border: 1px solid var(--divider-color, #444); border-radius: 8px;
@@ -251,6 +288,42 @@ class SmartGlassesPanel extends HTMLElement {
       </style>
       <div class="root">
         ${this._error ? `<div class="error">${this._error}</div>` : ""}
+
+        <div class="card">
+          <details class="setup" ${setupOpen}>
+            <summary>Add to your glasses</summary>
+            <div class="meta" style="margin-top:8px">
+              Requires <strong>Meta AI app v272+</strong> and glasses firmware
+              <strong>v125+</strong>. Your HA must be reachable on HTTPS from the
+              open internet (Nabu Casa, Cloudflare Tunnel, or your own reverse proxy).
+            </div>
+
+            <div style="font-weight:600; margin-top:14px;">Web App URL</div>
+            <div class="url-box ${originLooksPublic ? "" : "placeholder"}">
+              <code data-action="webapp-url">${webAppUrl}</code>
+              <button data-action="copy-webapp-url">Copy</button>
+              <span class="copy-toast" data-copy-toast>Copied</span>
+            </div>
+            ${originLooksPublic
+              ? `<div class="meta">Auto-filled from your current address. If your glasses pair from outside the LAN, use that address instead.</div>`
+              : `<div class="meta">Replace <code>&lt;your-ha-public-domain&gt;</code> with the address you use to reach HA from the internet.</div>`}
+
+            <ol class="steps">
+              <li><strong>Enable Developer Mode in Meta AI</strong> (one-time):
+                  Meta AI app → Settings → App Info → tap the app version number
+                  <strong>5 times</strong> in a row → confirm.</li>
+              <li><strong>Add the Web App</strong>:
+                  Meta AI app → App Settings → App Connections → Web Apps →
+                  <strong>Add a Web App</strong> → name it (e.g. <code>HA Glasses</code>)
+                  → paste the URL above → <strong>Connect</strong>.</li>
+              <li><strong>Launch on the glasses</strong>: the new app appears at
+                  the bottom of your app grid. Open it.</li>
+              <li><strong>Pair</strong>: the glasses show a 6-character code →
+                  type it in the <em>Glasses pairings</em> card below →
+                  <strong>Approve</strong>.</li>
+            </ol>
+          </details>
+        </div>
 
         <div class="card">
           <h2>Selected entities (${this._entities.length}/${MAX_ENTITIES})</h2>
@@ -359,9 +432,32 @@ class SmartGlassesPanel extends HTMLElement {
           if (confirm("Revoke this pairing? The glasses will lose access.")) {
             this._revoke(el.dataset.session);
           }
+        } else if (action === "copy-webapp-url") {
+          const url = this.querySelector('[data-action="webapp-url"]')?.textContent ?? "";
+          this._copyToClipboard(url);
         }
       });
     });
+  }
+
+  async _copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback for browsers that block writeText (e.g. on insecure origins).
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch { /* give up */ }
+      document.body.removeChild(ta);
+    }
+    const toast = this.querySelector("[data-copy-toast]");
+    if (toast) {
+      toast.classList.add("visible");
+      clearTimeout(this._copyToastTimer);
+      this._copyToastTimer = setTimeout(() => toast.classList.remove("visible"), 1200);
+    }
   }
 }
 
