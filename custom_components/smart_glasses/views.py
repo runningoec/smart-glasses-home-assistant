@@ -13,8 +13,11 @@ Three audiences hit these endpoints:
    - ``GET  /api/smart_glasses/pairings`` — list pending + approved pairings
    - ``POST /api/smart_glasses/pair/approve`` — approve a code, mint LLAT
    - ``DELETE /api/smart_glasses/pair/{session_id}`` — revoke a pairing
-   - ``GET  /api/smart_glasses/entities`` — get the selected entity ids
-   - ``PUT  /api/smart_glasses/entities`` — save the selection
+   - ``GET  /api/smart_glasses/cards`` — get the current card list (JSON)
+   - ``PUT  /api/smart_glasses/cards`` — save the card list (JSON)
+   - ``GET  /api/smart_glasses/cards/yaml`` — get current cards as YAML
+   - ``PUT  /api/smart_glasses/cards/yaml`` — save cards from a YAML body
+     (handy for getting an AI to author your dashboard for you)
 
 3. **HA frontend custom panel** loads ``frontend/panel.js`` directly via the
    route registered in ``__init__.py``.
@@ -28,6 +31,7 @@ import string
 from datetime import timedelta
 from typing import Any
 
+import yaml
 from aiohttp import web
 from homeassistant.auth.models import TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
 from homeassistant.components.http import HomeAssistantView
@@ -62,6 +66,43 @@ def _new_code() -> str:
 
 def _store(hass: HomeAssistant) -> SmartGlassesStore:
     return hass.data[DOMAIN]["store"]
+
+
+def _validate_cards(hass: HomeAssistant, cards: Any) -> str | None:
+    """Validate a parsed cards list. Returns None on success, or an error
+    string ready to surface to the user. Shared between the JSON and YAML
+    endpoints so both reject the same way."""
+    if not isinstance(cards, list):
+        return "cards must be a list"
+    for card in cards:
+        if not isinstance(card, dict):
+            return "each card must be an object"
+        if "id" not in card or "name" not in card or "items" not in card:
+            return "card must have id, name, items"
+        items = card["items"]
+        if not isinstance(items, list):
+            return "card items must be a list"
+        if len(items) > MAX_ENTITIES:
+            return f"max {MAX_ENTITIES} items per card"
+        for item in items:
+            if not isinstance(item, dict) or "type" not in item:
+                return "item must be an object with a type"
+            if item["type"] == "entity":
+                eid = item.get("entity_id")
+                if not eid or not isinstance(eid, str):
+                    return "entity item requires entity_id string"
+                if hass.states.get(eid) is None:
+                    return f"unknown entity_id: {eid}"
+            elif item["type"] == "action":
+                if not item.get("action") or not isinstance(item["action"], str):
+                    return "action item requires action string"
+                if not item.get("name") or not isinstance(item["name"], str):
+                    return "action item requires name string"
+                if "target" in item and not isinstance(item["target"], str):
+                    return "action target must be a string"
+            else:
+                return f"unknown item type: {item['type']}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -288,40 +329,50 @@ class CardsView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         body: dict[str, Any] = await request.json()
         cards = body.get("cards")
-        
-        if not isinstance(cards, list):
-            return self.json_message("cards must be a list", status_code=400)
-            
-        for card in cards:
-            if not isinstance(card, dict):
-                return self.json_message("each card must be an object", status_code=400)
-            if "id" not in card or "name" not in card or "items" not in card:
-                return self.json_message("card must have id, name, items", status_code=400)
-            items = card["items"]
-            if not isinstance(items, list):
-                return self.json_message("card items must be a list", status_code=400)
-            if len(items) > MAX_ENTITIES:
-                return self.json_message(f"max {MAX_ENTITIES} items per card", status_code=400)
-                
-            for item in items:
-                if not isinstance(item, dict) or "type" not in item:
-                    return self.json_message("item must be an object with a type", status_code=400)
-                if item["type"] == "entity":
-                    eid = item.get("entity_id")
-                    if not eid or not isinstance(eid, str):
-                        return self.json_message("entity item requires entity_id string", status_code=400)
-                    if hass.states.get(eid) is None:
-                        return self.json_message(f"unknown entity_id: {eid}", status_code=400)
-                elif item["type"] == "action":
-                    if not item.get("action") or not isinstance(item["action"], str):
-                        return self.json_message("action item requires action string", status_code=400)
-                    if not item.get("name") or not isinstance(item["name"], str):
-                        return self.json_message("action item requires name string", status_code=400)
-                    if "target" in item and not isinstance(item["target"], str):
-                        return self.json_message("action target must be a string", status_code=400)
-                else:
-                    return self.json_message(f"unknown item type: {item['type']}", status_code=400)
+        err = _validate_cards(hass, cards)
+        if err is not None:
+            return self.json_message(err, status_code=400)
+        await _store(hass).async_set_cards(cards)
+        return self.json({"ok": True, "cards": cards})
 
+
+class CardsYamlView(HomeAssistantView):
+    """YAML interface to the card list — lets a user (or an AI assistant)
+    edit the dashboard as a single text blob.
+
+    GET → returns ``text/yaml`` of ``{cards: [...]}``.
+    PUT body (any content-type, parsed as YAML) → replaces cards. Accepts
+    either ``{cards: [...]}`` at the top level or just a bare ``[...]``.
+    Validation is identical to :class:`CardsView` so behaviour stays consistent.
+    """
+
+    url = f"{API_PREFIX}/cards/yaml"
+    name = f"{DOMAIN}:cards_yaml"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        cards = _store(hass).cards
+        text = yaml.safe_dump(
+            {"cards": cards},
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+        )
+        return web.Response(text=text, content_type="text/yaml")
+
+    async def put(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        text = await request.text()
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError as err:
+            return self.json_message(f"invalid yaml: {err}", status_code=400)
+        # Accept either {cards: [...]} or a bare [...] for convenience.
+        cards = parsed.get("cards") if isinstance(parsed, dict) else parsed
+        err_msg = _validate_cards(hass, cards)
+        if err_msg is not None:
+            return self.json_message(err_msg, status_code=400)
         await _store(hass).async_set_cards(cards)
         return self.json({"ok": True, "cards": cards})
 
@@ -335,4 +386,5 @@ ALL_VIEWS: list[type[HomeAssistantView]] = [
     PairApproveView,
     PairRevokeView,
     CardsView,
+    CardsYamlView,
 ]
