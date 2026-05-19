@@ -54,18 +54,37 @@ class SmartGlassesPanel extends HTMLElement {
 
   // ---- networking ---------------------------------------------------------
 
-  get _authToken() {
-    return this._hass?.auth?.data?.access_token
-        ?? this._hass?.connection?.options?.auth?.data?.access_token;
-  }
-
   async _api(method, path, body) {
+    const trimmed = path.startsWith("/") ? path.slice(1) : path;
+
+    // Prefer hass.callApi — it's HA's own frontend → backend helper. It
+    // attaches auth the same way HA's built-in calls do, which is the
+    // reliable cross-version path. Manual `fetch(... Bearer)` worked for
+    // GETs (session cookie carried us) but failed on POST/PUT/DELETE
+    // because the cookie isn't accepted there.
+    if (typeof this._hass?.callApi === "function") {
+      try {
+        return await this._hass.callApi(method, `smart_glasses/${trimmed}`, body);
+      } catch (err) {
+        const status = err?.status_code ?? err?.code ?? "?";
+        const bodyMsg = (typeof err?.body === "string")
+          ? err.body
+          : (err?.body?.message ?? err?.body?.error ?? JSON.stringify(err?.body ?? err?.message ?? ""));
+        throw new Error(`${method} ${path} ${status}: ${bodyMsg}`);
+      }
+    }
+
+    // Fallback for any frontend that doesn't expose callApi.
     const headers = { "content-type": "application/json" };
-    const token = this._authToken;
+    const token = this._hass?.auth?.accessToken
+              ?? this._hass?.auth?.data?.access_token
+              ?? this._hass?.connection?.options?.auth?.accessToken
+              ?? this._hass?.connection?.options?.auth?.data?.access_token;
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(`/api/smart_glasses${path}`, {
       method,
       headers,
+      credentials: "same-origin",
       body: body ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) {
