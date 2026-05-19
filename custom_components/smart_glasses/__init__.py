@@ -11,24 +11,24 @@ from __future__ import annotations
 import logging
 
 from homeassistant.components.frontend import async_register_built_in_panel
-from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
     DOMAIN,
-    FRONTEND_DIR,
-    PANEL_JS_PATH,
+    PANEL_JS_ROUTE,
     PANEL_URL,
+    VERSION,
 )
 from .store import SmartGlassesStore
 from .views import ALL_VIEWS
 
 _LOGGER = logging.getLogger(__name__)
 
-# URL where the panel's JS bundle is served. Has to match what
-# async_register_built_in_panel(js_url=...) points at.
-_PANEL_JS_URL = "/smart_glasses_static/panel.js"
+# URL HA's frontend fetches to load the panel custom element. The `?v=`
+# bust forces browsers (and CDNs that key cache by full URL) to re-fetch
+# on each version bump.
+_PANEL_JS_URL = f"{PANEL_JS_ROUTE}?v={VERSION}"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -37,17 +37,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await store.async_load()
     hass.data.setdefault(DOMAIN, {})["store"] = store
 
-    # Serve the frontend bundle as a static path so HA's frontend can fetch
-    # /smart_glasses_static/panel.js, and so anything else in frontend/ (e.g.
-    # future CSS or icons) is reachable.
-    await hass.http.async_register_static_paths([
-        StaticPathConfig(
-            url_path="/smart_glasses_static",
-            path=str(FRONTEND_DIR),
-            cache_headers=False,
-        ),
-    ])
-
+    # All file serving (panel.js, glasses.html) goes through HomeAssistantView
+    # rather than StaticPathConfig so we control the Cache-Control headers.
+    # CDNs like Cloudflare cache JS/HTML aggressively otherwise.
     for view_cls in ALL_VIEWS:
         hass.http.register_view(view_cls())
 

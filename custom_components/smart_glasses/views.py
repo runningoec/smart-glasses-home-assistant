@@ -41,6 +41,8 @@ from .const import (
     MAX_ENTITIES,
     PAIRING_CODE_LENGTH,
     PAIRING_TTL_SECONDS,
+    PANEL_JS_PATH,
+    PANEL_JS_ROUTE,
 )
 from .store import SmartGlassesStore
 
@@ -78,7 +80,34 @@ class GlassesAppView(HomeAssistantView):
     async def get(self, request: web.Request) -> web.StreamResponse:
         return web.FileResponse(
             GLASSES_HTML_PATH,
-            headers={"cache-control": "no-store"},
+            headers={"cache-control": "no-store, no-cache, must-revalidate"},
+        )
+
+
+class PanelJsView(HomeAssistantView):
+    """Serve the management-panel JS bundle.
+
+    We can't use StaticPathConfig for this file because StaticPathConfig
+    doesn't let us set Cache-Control. With a CDN (Cloudflare Tunnel etc.)
+    in front of HA, the CDN's default Edge Cache TTL caches panel.js for
+    hours — making integration updates invisible to the browser until the
+    edge cache expires. Serving via a view lets us send no-store, which
+    Cloudflare honors. We also accept a ?v=<version> cache-buster on the
+    URL for belt-and-suspenders.
+    """
+
+    url = PANEL_JS_ROUTE
+    name = f"{DOMAIN}:panel_js"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.StreamResponse:
+        return web.FileResponse(
+            PANEL_JS_PATH,
+            headers={
+                "cache-control": "no-store, no-cache, must-revalidate",
+                "pragma": "no-cache",
+                "content-type": "application/javascript",
+            },
         )
 
 
@@ -274,6 +303,7 @@ class EntitiesView(HomeAssistantView):
 
 ALL_VIEWS: list[type[HomeAssistantView]] = [
     GlassesAppView,
+    PanelJsView,
     PairStartView,
     PairTokenView,
     PairingsListView,

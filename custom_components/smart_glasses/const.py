@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 DOMAIN = "smart_glasses"
+
+# Read the integration version from manifest.json so we don't have to track it
+# in two places. Used as a cache-buster on the panel.js URL — every release
+# bumps the version, which forces fresh fetches through any CDN sitting in
+# front of the user's HA (e.g. Cloudflare Tunnel).
+try:
+    with open(Path(__file__).parent / "manifest.json", encoding="utf-8") as _mf:
+        VERSION = json.load(_mf).get("version", "0")
+except Exception:  # noqa: BLE001
+    VERSION = "0"
 
 # URLs registered with HA's HTTP layer.
 PANEL_URL = "/smart-glasses"  # Custom panel (logged-in users in a browser).
@@ -31,3 +42,9 @@ PAIRING_TTL_SECONDS = 300
 FRONTEND_DIR: Path = Path(__file__).parent / "frontend"
 PANEL_JS_PATH: Path = FRONTEND_DIR / "panel.js"
 GLASSES_HTML_PATH: Path = FRONTEND_DIR / "glasses.html"
+
+# Route that serves panel.js. Lives under /api/ so it goes through a
+# HomeAssistantView (which lets us send explicit Cache-Control: no-store)
+# rather than HA's StaticPathConfig (which doesn't expose per-response
+# header control and lets CDNs apply their default Edge Cache TTL).
+PANEL_JS_ROUTE = "/api/smart_glasses/panel.js"
