@@ -67,7 +67,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "js_url": _PANEL_JS_URL,
             },
         },
-        require_admin=False,
+        require_admin=True,
     )
     return True
 
