@@ -1,0 +1,22 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Track HA's own style with a couple of relaxations that fit this repo.
+select = [
+  "E",      # pycodestyle errors
+  "F",      # pyflakes
+  "W",      # pycodestyle warnings
+  "I",      # isort
+  "B",      # bugbear
+  "UP",     # pyupgrade
+  "SIM",    # simplify
+]
+ignore = [
+  "E501",   # line length is enforced separately
+  "B008",   # function call in default argument — common HA pattern
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["custom_components.smart_glasses"]

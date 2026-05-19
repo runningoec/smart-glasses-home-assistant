@@ -59,7 +59,7 @@ from .const import (
     PANEL_JS_PATH,
     PANEL_JS_ROUTE,
 )
-from .store import SmartGlassesStore
+from .store import SmartGlassesStore, _redact
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -470,7 +470,9 @@ class PairApproveView(HomeAssistantView):
         except Exception as err:  # noqa: BLE001
             # Surface the real error rather than letting aiohttp swallow it
             # into HA's generic "Server got itself in trouble" 500.
-            _LOGGER.exception("pair_approve failed for session %s", pairing["session_id"])
+            _LOGGER.exception(
+                "pair_approve failed for session %s", _redact(pairing["session_id"]),
+            )
             return self.json_message(
                 f"approve failed: {type(err).__name__}: {err}",
                 status_code=500,

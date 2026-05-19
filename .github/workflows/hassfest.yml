@@ -1,0 +1,22 @@
+name: hassfest
+
+# Validates the integration manifest, dependencies, and metadata against the
+# rules Home Assistant enforces for shipped integrations. Required to pass
+# before opening the HACS default-store PR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Re-run weekly — HA's rules occasionally change and we want to know if
+    # a future release would reject the integration.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master

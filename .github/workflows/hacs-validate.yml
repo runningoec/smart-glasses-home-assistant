@@ -1,0 +1,21 @@
+name: HACS validation
+
+# Validates the repo layout, hacs.json, and shipping conventions against
+# HACS's rules. Required to pass before opening the HACS default-store PR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration

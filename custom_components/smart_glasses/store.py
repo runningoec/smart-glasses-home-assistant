@@ -46,6 +46,16 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _redact(value: str | None, prefix: int = 8) -> str:
+    """Truncated identifier safe for logs. Keeps enough to disambiguate
+    entries while not handing a scraper a usable handle."""
+    if not value:
+        return "<none>"
+    if len(value) <= prefix:
+        return value
+    return f"{value[:prefix]}…"
+
+
 class SmartGlassesStore:
     # Cap on retained audit entries. Newest first; older entries are dropped.
     AUDIT_CAP = 200
@@ -84,9 +94,11 @@ class SmartGlassesStore:
         stored it on the pairing record. v0.6 moved to opaque session tokens
         validated by hash. Revoke the leftover LLAT refresh_tokens here so a
         glasses device still holding the old plaintext can't keep hitting HA.
-        Old pairings are then either upgraded in shape (if we somehow have a
-        hash already) or removed entirely — which forces a fresh re-pair on
-        upgrade and is what we want.
+
+        Each pairing is migrated independently — a single bad record can't
+        poison the rest of the dataset — and progress is persisted after
+        every successful step so a crash mid-migration doesn't repeat work
+        we've already done on the next start.
         """
         legacy = [
             (sid, p) for sid, p in self._data["pairings"].items()
@@ -98,17 +110,41 @@ class SmartGlassesStore:
             "smart_glasses: migrating %d legacy LLAT pairing(s) — devices must re-pair",
             len(legacy),
         )
+        migrated = 0
         for sid, p in legacy:
-            refresh_id = p.get("refresh_id")
-            if refresh_id:
+            try:
+                refresh_id = p.get("refresh_id")
+                if refresh_id:
+                    try:
+                        refresh = await self._hass.auth.async_get_refresh_token(refresh_id)
+                        if refresh is not None:
+                            await self._hass.auth.async_remove_refresh_token(refresh)
+                    except Exception:  # noqa: BLE001
+                        # Token may have been revoked externally already, or
+                        # the auth manager doesn't recognize it. Either way,
+                        # we proceed with deleting the local record below.
+                        _LOGGER.exception(
+                            "could not revoke legacy refresh token %s",
+                            _redact(refresh_id),
+                        )
+                self._data["pairings"].pop(sid, None)
                 try:
-                    refresh = await self._hass.auth.async_get_refresh_token(refresh_id)
-                    if refresh is not None:
-                        await self._hass.auth.async_remove_refresh_token(refresh)
+                    await self.async_save()
                 except Exception:  # noqa: BLE001
-                    _LOGGER.exception("could not revoke legacy refresh token %s", refresh_id)
-            self._data["pairings"].pop(sid, None)
-        await self.async_save()
+                    _LOGGER.exception(
+                        "could not persist migration progress for pairing %s — "
+                        "will retry on next start",
+                        _redact(sid),
+                    )
+                migrated += 1
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception(
+                    "unexpected error migrating legacy pairing %s — skipping",
+                    _redact(sid),
+                )
+        _LOGGER.info(
+            "smart_glasses: migrated %d/%d legacy pairing(s)", migrated, len(legacy),
+        )
 
     async def async_save(self) -> None:
         await self._store.async_save(self._data)
