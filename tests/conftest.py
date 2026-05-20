@@ -26,6 +26,19 @@ _hass_nabucasa.remote = SimpleNamespace(
 )
 sys.modules["hass_nabucasa"] = _hass_nabucasa
 
+# aiohttp may use aiodns/pycares on newer Linux runners. pycares lazily starts
+# a process-global daemon thread for safe channel shutdown the first time it is
+# used, and pytest-homeassistant then flags the creating test as leaking that
+# thread. Start it once up front so it is outside per-test leak accounting.
+try:
+    import pycares
+except ImportError:
+    pycares = None
+else:
+    shutdown_manager = getattr(pycares, "_shutdown_manager", None)
+    if shutdown_manager is not None:
+        shutdown_manager.start()
+
 import pytest  # noqa: E402
 from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: E402
 
