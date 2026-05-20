@@ -36,26 +36,41 @@
 
     #app { width: 600px; height: 600px; display: flex; flex-direction: column; }
 
-    /* Tab strip across the top — shows card names. The current card is
-       highlighted; while focusMode === "tabs" the same tab also gets a
-       bright outline so the user knows arrow keys move card selection.
-       Hidden in pair / empty modes. */
+    /* Tab strip across the top — shows the ACTIVE card's full name
+       plus dot indicators for position. Cramming 8 names into 600px
+       just truncated everything to "Offi…/Livi…/Kitc…" which is
+       useless. One name + dots tells the user where they are without
+       eating the limited real estate. */
     #tabs {
-      display: flex; gap: 6px; padding: 8px 10px 0;
-      overflow-x: hidden; flex-shrink: 0;
+      display: flex; flex-direction: column; align-items: center;
+      gap: 4px; padding: 8px 10px 0;
+      flex-shrink: 0;
+      cursor: pointer;
     }
-    .tab {
-      flex: 1 1 0; min-width: 0;
-      padding: 6px 10px; border-radius: 8px;
-      background: rgba(255,255,255,0.05);
+    #tabs[data-focus-mode="tabs"] .tab-name {
+      border-color: var(--fg);
+    }
+    .tab-name {
+      font-size: 22px; font-weight: 700;
+      max-width: 100%;
+      padding: 4px 14px;
+      border-radius: 8px;
       border: 2px solid transparent;
-      font-size: 16px; font-weight: 600; color: var(--dim);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      text-align: center; cursor: pointer;
-      transition: background 0.1s, color 0.1s, border-color 0.1s;
+      text-align: center;
     }
-    .tab.active   { background: rgba(255,255,255,0.12); color: var(--fg); }
-    .tab.focused  { border-color: var(--fg); }
+    .tab-dots {
+      display: flex; gap: 6px; align-items: center;
+      padding: 2px 0;
+    }
+    .tab-dots .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: rgba(255,255,255,0.25);
+    }
+    .tab-dots .dot.active {
+      background: var(--fg);
+      width: 8px; height: 8px;
+    }
 
     /* Pairing screen — first launch only. */
     #pair {
@@ -89,9 +104,11 @@
       background: rgba(255,255,255,0.06);
       border: 1px solid rgba(255,255,255,0.10);
       border-radius: 14px;
-      padding: 14px;
+      padding: 10px 12px;
       display: flex; flex-direction: column;
-      justify-content: space-between;
+      justify-content: center; align-items: center;
+      gap: 6px;
+      text-align: center;
       overflow: hidden;
       min-width: 0;
       cursor: pointer;
@@ -101,23 +118,38 @@
       background: rgba(255,255,255,0.15);
       transform: scale(0.98);
     }
-    .cell .name {
-      font-size: 18px; font-weight: 600; color: var(--dim);
+    /* Value is the headline — large, bold, the one thing you read at a glance. */
+    .cell .value {
+      font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums;
+      line-height: 1.05;
+      max-width: 100%;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .cell .value {
-      font-size: 36px; font-weight: 800; font-variant-numeric: tabular-nums;
-      overflow: hidden; text-overflow: ellipsis;
+    /* Name is the subtitle — smaller, dimmer, two lines max so it can
+       wrap (e.g. "Living Room Fan Lights" doesn't truncate to "Living
+       Room Fan ...") without exploding the cell. */
+    .cell .name {
+      font-size: 15px; font-weight: 500; color: var(--dim);
+      line-height: 1.2;
+      max-width: 100%;
+      display: -webkit-box;
+      -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
     }
-    /* When the grid is dense (5+) shrink the value to keep it readable. */
+    /* When the grid is dense (5+) shrink the headline so it doesn't
+       blow past the available width. */
     #grid[data-count="5"] .cell .value, #grid[data-count="6"] .cell .value,
     #grid[data-count="7"] .cell .value, #grid[data-count="8"] .cell .value {
       font-size: 28px;
     }
-    /* Single-cell mode gets a huge centered display. */
-    #grid[data-count="1"] .cell { justify-content: center; text-align: center; padding: 48px; }
-    #grid[data-count="1"] .cell .name { font-size: 28px; }
+    #grid[data-count="5"] .cell .name, #grid[data-count="6"] .cell .name,
+    #grid[data-count="7"] .cell .name, #grid[data-count="8"] .cell .name {
+      font-size: 13px;
+    }
+    /* Single-cell mode goes really big. */
+    #grid[data-count="1"] .cell { padding: 48px; gap: 16px; }
     #grid[data-count="1"] .cell .value { font-size: 96px; }
+    #grid[data-count="1"] .cell .name  { font-size: 28px; -webkit-line-clamp: 3; }
 
     .cell[data-on="true"]  .value { color: var(--on); }
     .cell[data-on="false"] .value { color: var(--off); }
@@ -537,12 +569,18 @@
         $tabs.innerHTML = "";
         return;
       }
-      $tabs.innerHTML = cards.map((c, i) => {
-        const classes = ["tab"];
-        if (i === currentCardIndex) classes.push("active");
-        if (i === currentCardIndex && focusMode === "tabs") classes.push("focused");
-        return `<div class="${classes.join(" ")}" data-tab-idx="${i}">${esc(c.name)}</div>`;
-      }).join("");
+      $tabs.dataset.focusMode = focusMode;
+      const name = cards[currentCardIndex]?.name ?? "";
+      const dots = cards.map((_, i) =>
+        `<span class="dot${i === currentCardIndex ? " active" : ""}"></span>`
+      ).join("");
+      // Tapping the strip enters cells mode (mirrors swipe-down behaviour).
+      // Dots aren't individually tappable — too small on the glasses; users
+      // swipe / arrow between cards.
+      $tabs.innerHTML = `
+        <div class="tab-name" data-action="tab-strip">${esc(name)}</div>
+        <div class="tab-dots">${dots}</div>
+      `;
     }
 
     function renderGrid() {
@@ -565,10 +603,12 @@
         const focused = (focusMode === "cells" && idx === focusedCellIndex) ? " focused" : "";
         const armedCls = (idx === armedIdx) ? " armed" : "";
         if (item.type === "action") {
+          // Action items: the verb (ACT) is the headline; the friendly
+          // name describes what it does, below it.
           return `
             <div class="cell${focused}${armedCls}" data-idx="${idx}" data-type="action" data-on="unset" data-stale="false">
-              <div class="name">${esc(item.name)}</div>
               <div class="value">ACT</div>
+              <div class="name">${esc(item.name)}</div>
             </div>
           `;
         } else {
@@ -587,8 +627,8 @@
                       : "unset";
           return `
             <div class="cell${focused}${armedCls}" data-idx="${idx}" data-type="entity" data-eid="${esc(eid)}" data-on="${onAttr}" data-stale="${stale}">
-              <div class="name">${esc(name)}</div>
               <div class="value">${s ? esc(fmtState(s)) : "—"}</div>
+              <div class="name">${esc(name)}</div>
             </div>
           `;
         }
@@ -698,15 +738,18 @@
     // switch cards, click a cell to fire it. This is independent of the
     // keyboard focus model — useful when previewing in a browser, and
     // harmless on glasses (no pointer events fire there).
-    $tabs.addEventListener("click", (evt) => {
-      const tab = evt.target.closest(".tab");
-      if (!tab) return;
-      const idx = Number(tab.dataset.tabIdx);
-      if (Number.isNaN(idx)) return;
-      currentCardIndex = idx;
-      focusMode = "tabs";
-      focusedCellIndex = 0;
-      renderGrid();
+    $tabs.addEventListener("click", () => {
+      // The strip is no longer a row of per-card buttons (truncating to
+      // "Offi…/Livi…" wasn't useful at 600px). It shows only the active
+      // card. Tapping it drops into cells mode — mirrors the swipe-down
+      // gesture. Use left/right swipes (or arrow keys) to flip cards.
+      if (cards.length === 0) return;
+      const items = cards[currentCardIndex]?.items ?? [];
+      if (items.length > 0) {
+        focusMode = "cells";
+        focusedCellIndex = 0;
+        renderGrid();
+      }
     });
     $grid.addEventListener("click", (evt) => {
       const cell = evt.target.closest(".cell");
