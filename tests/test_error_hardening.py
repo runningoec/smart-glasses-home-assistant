@@ -48,11 +48,13 @@ async def test_glance_call_service_hides_internal_errors(
     admin = await hass_client()
     glasses = await hass_client_no_auth()
 
-    cards = [{
-        "id": "home",
-        "name": "Home",
-        "items": [{"type": "entity", "entity_id": "light.kitchen"}],
-    }]
+    cards = [
+        {
+            "id": "home",
+            "name": "Home",
+            "items": [{"type": "entity", "entity_id": "light.kitchen"}],
+        }
+    ]
     set_resp = await admin.put("/api/smart_glasses/cards", json={"cards": cards})
     assert set_resp.status == 200
 
@@ -62,14 +64,14 @@ async def test_glance_call_service_hides_internal_errors(
         json={"code": start["code"], "session_id": start["session_id"]},
     )
     assert approve.status == 200
-    token = (await (await glasses.get(
-        f"/api/smart_glasses/pair/{start['session_id']}/token"
-    )).json())["token"]
+    token = (
+        await (await glasses.get(f"/api/smart_glasses/pair/{start['session_id']}/token")).json()
+    )["token"]
 
     async def boom(*args, **kwargs):
         raise RuntimeError("service failure details")
 
-    monkeypatch.setattr(hass.services, "async_call", boom)
+    monkeypatch.setattr(type(hass.services), "async_call", boom)
 
     resp = await glasses.post(
         "/api/smart_glasses/glance/call_service",
