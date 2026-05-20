@@ -38,14 +38,15 @@ async def hass_with_smart_glasses(enable_custom_integrations, hass):
 
     The integration registers its panel and HTTP views in ``async_setup_entry``,
     so tests that exercise routes need the config-entry path, not plain
-    component setup.
+    component setup. The route tests only need HA's HTTP stack; the panel
+    registration helper writes into ``hass.data`` and does not require the
+    frontend component to boot.
     """
     from homeassistant.setup import async_setup_component
 
-    # frontend pulls in http; smart_glasses registers its views + panel
-    # against hass.http.app, so we need both up before we hit the routes.
+    # The integration registers views against hass.http.app, so HTTP must be
+    # available before the config entry is set up.
     assert await async_setup_component(hass, "http", {})
-    assert await async_setup_component(hass, "frontend", {})
 
     entry = MockConfigEntry(domain=DOMAIN, title="Smart Glasses", data={})
     entry.add_to_hass(hass)
