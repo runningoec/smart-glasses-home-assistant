@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="Smart Glasses for Home Assistant" width="180">
+  <img src="docs/screenshots/glasses-grid.png" alt="Glasses display showing a Bedroom card with three live entities" width="420">
 </p>
 
 # Smart Glasses for Home Assistant
@@ -19,12 +19,16 @@ entities per card and tap them to fire HA services.
 
 ## What you get
 
-- **Management panel** at `<your-ha>/smart-glasses` — pick the entities and
-  actions on each card, manage pairings, edit via YAML, see an audit log.
 - **Glasses Web App** at `<your-ha>/smart-glasses-app` — what the glasses
   load. First time: shows a short pairing code. After: adaptive grids of
   the entities/actions you configured, live-updating over WebSocket. Tap or
   arrow-key + Enter to fire toggles and services.
+- **Management panel** at `<your-ha>/smart-glasses` — pick the entities and
+  actions on each card, manage pairings, edit via YAML, see an audit log.
+
+<p align="center">
+  <img src="docs/screenshots/panel-dashboard.png" alt="Admin panel: Dashboard card with card-pills, item list, and the Entity/Custom action subtabs" width="640">
+</p>
 
 ## How it fits together
 
