@@ -36,19 +36,25 @@
 
     #app { width: 600px; height: 600px; display: flex; flex-direction: column; }
 
-    /* Tab strip across the top — shows the ACTIVE card's full name
-       plus dot indicators for position. Cramming 8 names into 600px
-       just truncated everything to "Offi…/Livi…/Kitc…" which is
-       useless. One name + dots tells the user where they are without
-       eating the limited real estate. */
+    /* Tab strip across the top:
+         ┌────────────────────────────────────────────┐
+         │  Kitchen     Living Room     Bedroom       │   ← prev / current / next
+         │            • • ● • • • • •                 │   ← position dots
+         └────────────────────────────────────────────┘
+       The active card name is bright; the prev/next previews are dim
+       ghost text so the user can see what they'll get if they swipe.
+       Only renders prev/next slots when there are >1 cards. */
     #tabs {
       display: flex; flex-direction: column; align-items: center;
       gap: 4px; padding: 8px 10px 0;
       flex-shrink: 0;
-      cursor: pointer;
     }
     #tabs[data-focus-mode="tabs"] .tab-name {
       border-color: var(--fg);
+    }
+    .tab-row {
+      display: flex; align-items: baseline; justify-content: center;
+      gap: 12px; width: 100%; max-width: 100%;
     }
     .tab-name {
       font-size: 22px; font-weight: 700;
@@ -58,7 +64,18 @@
       border: 2px solid transparent;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       text-align: center;
+      flex: 0 1 auto;
+      cursor: pointer;
     }
+    .tab-side {
+      font-size: 14px; font-weight: 500;
+      color: rgba(255, 255, 255, 0.28);
+      flex: 1 1 0; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      cursor: pointer;
+    }
+    .tab-side.tab-prev { text-align: right; }
+    .tab-side.tab-next { text-align: left; }
     .tab-dots {
       display: flex; gap: 6px; align-items: center;
       padding: 2px 0;
@@ -590,15 +607,23 @@
         return;
       }
       $tabs.dataset.focusMode = focusMode;
-      const name = cards[currentCardIndex]?.name ?? "";
+      const total = cards.length;
+      const idx = currentCardIndex;
+      const name = cards[idx]?.name ?? "";
+      // Wrap-around previews so the user sees what swipe-left and
+      // swipe-right will yield. Skip them entirely when there's only
+      // one card to avoid showing "Office  Office  Office".
+      const prev = total > 1 ? cards[(idx - 1 + total) % total].name : null;
+      const next = total > 1 ? cards[(idx + 1) % total].name : null;
       const dots = cards.map((_, i) =>
-        `<span class="dot${i === currentCardIndex ? " active" : ""}"></span>`
+        `<span class="dot${i === idx ? " active" : ""}"></span>`
       ).join("");
-      // Tapping the strip enters cells mode (mirrors swipe-down behaviour).
-      // Dots aren't individually tappable — too small on the glasses; users
-      // swipe / arrow between cards.
       $tabs.innerHTML = `
-        <div class="tab-name" data-action="tab-strip">${esc(name)}</div>
+        <div class="tab-row">
+          ${prev !== null ? `<div class="tab-side tab-prev" data-action="tab-prev">${esc(prev)}</div>` : `<div class="tab-side"></div>`}
+          <div class="tab-name" data-action="tab-strip">${esc(name)}</div>
+          ${next !== null ? `<div class="tab-side tab-next" data-action="tab-next">${esc(next)}</div>` : `<div class="tab-side"></div>`}
+        </div>
         <div class="tab-dots">${dots}</div>
       `;
     }
@@ -758,12 +783,16 @@
     // switch cards, click a cell to fire it. This is independent of the
     // keyboard focus model — useful when previewing in a browser, and
     // harmless on glasses (no pointer events fire there).
-    $tabs.addEventListener("click", () => {
-      // The strip is no longer a row of per-card buttons (truncating to
-      // "Offi…/Livi…" wasn't useful at 600px). It shows only the active
-      // card. Tapping it drops into cells mode — mirrors the swipe-down
-      // gesture. Use left/right swipes (or arrow keys) to flip cards.
+    $tabs.addEventListener("click", (evt) => {
       if (cards.length === 0) return;
+      // Prev/next ghost text is tappable as a shortcut — equivalent to
+      // swipe-left / swipe-right but without needing the gesture.
+      const target = evt.target.closest("[data-action]");
+      const action = target?.dataset?.action;
+      if (action === "tab-prev") { switchCard(-1); return; }
+      if (action === "tab-next") { switchCard( 1); return; }
+      // Tapping the active card name drops into cells mode (mirrors the
+      // swipe-down gesture and Down/Enter in tabs mode).
       const items = cards[currentCardIndex]?.items ?? [];
       if (items.length > 0) {
         focusMode = "cells";
