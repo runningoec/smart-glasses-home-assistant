@@ -25,6 +25,7 @@ async def test_cards_round_trip(hass_with_smart_glasses, hass, hass_client):
     }]
     put_resp = await client.put("/api/smart_glasses/cards", json={"cards": cards})
     assert put_resp.status == 200
+    await put_resp.read()
 
     after = await (await client.get("/api/smart_glasses/cards")).json()
     assert after == {"cards": cards}
