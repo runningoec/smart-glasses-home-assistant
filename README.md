@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/screenshots/glasses-grid.png" alt="Glasses display showing a Bedroom card with three live entities" width="420">
+  <img src="logo.png" alt="Smart Glasses for Home Assistant" width="180">
 </p>
 
 # Smart Glasses for Home Assistant
@@ -26,6 +26,10 @@ entities per card and tap them to fire HA services.
 - **Management panel** at `<your-ha>/smart-glasses` — approve pairings,
   edit cards in the consolidated Dashboard, flip inline **Confirm** toggles,
   drop into YAML for advanced rules, and review recent audit events.
+
+<p align="center">
+  <img src="docs/screenshots/glasses-grid.png" alt="Glasses display showing a Bedroom card with three live entities — bedroom lights ON, bed occupied OFF, bedroom temperature 78.5°F" width="380">
+</p>
 
 ## How it fits together
 
