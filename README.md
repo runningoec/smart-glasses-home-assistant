@@ -19,16 +19,13 @@ entities per card and tap them to fire HA services.
 
 ## What you get
 
-- **Glasses Web App** at `<your-ha>/smart-glasses-app` — what the glasses
-  load. First time: shows a short pairing code. After: adaptive grids of
-  the entities/actions you configured, live-updating over WebSocket. Tap or
-  arrow-key + Enter to fire toggles and services.
-- **Management panel** at `<your-ha>/smart-glasses` — pick the entities and
-  actions on each card, manage pairings, edit via YAML, see an audit log.
-
-<p align="center">
-  <img src="docs/screenshots/panel-dashboard.png" alt="Admin panel: Dashboard card with card-pills, item list, and the Entity/Custom action subtabs" width="640">
-</p>
+- **Glasses Web App** at `<your-ha>/smart-glasses-app` — a 600x600 HUD with
+  value-first cells, ghost previews of adjacent cards, live WebSocket state,
+  and tap, swipe, or keyboard navigation. Sensitive items can require a
+  second tap before they fire.
+- **Management panel** at `<your-ha>/smart-glasses` — approve pairings,
+  edit cards in the consolidated Dashboard, flip inline **Confirm** toggles,
+  drop into YAML for advanced rules, and review recent audit events.
 
 ## How it fits together
 
@@ -73,7 +70,52 @@ flowchart LR
 
 Then:
 
-5. Open the **Smart Glasses** panel in the sidebar → pick up to 8 entities → **Save**.
+5. Open the **Smart Glasses** panel in the sidebar → use the **Dashboard**
+   card to add up to 8 items per card → **Save changes**.
+
+## Configure on the panel
+
+The panel is organized around two always-visible cards and three supporting
+collapsibles:
+
+- **Glasses pairings** stays at the top for the day-to-day flow: approve a
+  new device, or revoke one that should no longer have access.
+- **Dashboard** is the main editor: card pills across the top, rename/delete
+  controls, current items with inline **Confirm** toggles, and **Entity** /
+  **Custom action** subtabs for adding more.
+- Saving shows immediate feedback, and the glasses pick up card-definition
+  changes in the background within about a minute.
+
+<p align="center">
+  <img src="docs/screenshots/panel-dashboard.png" alt="Admin panel Dashboard card with card pills, inline Confirm toggles, and Entity and Custom action subtabs" width="720">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/panel-toast.png" alt="Green save toast saying that glasses pick up changes within a minute" width="420">
+</p>
+
+### YAML / AI-assisted edits
+
+The built-in YAML editor is the escape hatch for bulk edits, AI-generated
+layouts, and advanced fields the inline form does not express well. In
+particular, time-window `confirm:` rules live here; the Dashboard reflects
+them back as a read-only pill so you can see they are active without
+flattening the config.
+
+<p align="center">
+  <img src="docs/screenshots/panel-yaml.png" alt="Expanded YAML editor showing cards.yaml content and the Apply, Copy, and Reload from server buttons" width="720">
+</p>
+
+### Collapsible utilities
+
+Below the core pairings and Dashboard cards, the panel keeps **Add to your
+glasses**, **YAML editor**, and **Audit log** in matched collapsibles so the
+page stays compact once you're set up, but still exposes the full workflow
+when you need it.
+
+<p align="center">
+  <img src="docs/screenshots/panel-collapsibles.png" alt="Closed Add to your glasses, YAML editor, and Audit log collapsibles with matched chevron styling" width="720">
+</p>
 
 ## Add to your glasses
 
@@ -83,6 +125,13 @@ You need a way for your HA to be reachable from the open internet on HTTPS
 glasses fetch the Web App from that URL.
 
 **Minimum versions**: Meta Ray-Ban Display firmware ≥ `v125`, Meta AI app ≥ `v272`.
+
+The panel's **Add to your glasses** card mirrors the same setup flow and
+gives you a copyable Web App URL:
+
+<p align="center">
+  <img src="docs/screenshots/panel-setup.png" alt="Add to your glasses card expanded with the Web App URL, Copy button, and the four setup steps" width="720">
+</p>
 
 ### 1. Enable Developer Mode on your phone (one-time)
 
@@ -107,11 +156,16 @@ The app appears immediately at the bottom of your Meta Ray-Ban Display app grid.
    (e.g. `R7P9XQ`) and a hint pointing to `<your-ha>/smart-glasses`.
 2. On your phone, open `<your-ha>/smart-glasses` (you're already logged in
    to HA so the panel just opens).
-3. In the **Glasses pairings** section, click **Approve** next to the
-   matching code (or type the code into the approval field and submit).
+3. In the **Glasses pairings** card, click **Approve** next to the matching
+   code (or open the typed-code fallback and submit it there).
 4. Within a couple seconds the glasses switch from the pairing screen to
    the live entity grid. Pairing is sticky — the glasses remember the
    token and skip step 3 from now on.
+
+<p align="center">
+  <img src="docs/screenshots/glasses-pair-code.png" alt="Glasses pairing screen showing a six-character code and the smart-glasses panel URL" width="230">
+  <img src="docs/screenshots/panel-pairings.png" alt="Management panel Glasses pairings card showing a pending code, Approve and Revoke buttons, and the typed-code fallback" width="520">
+</p>
 
 #### Pairing flow
 
@@ -181,6 +235,28 @@ seconds later. Not catastrophic, but if you want per-client rate
 limiting, enable `use_x_forwarded_for` and list your proxy under
 `trusted_proxies` in HA's `http:` config.
 
+## Navigation on the glasses
+
+The glasses UI has two simple modes: **tabs** at the top of the screen, and
+**cells** inside the active card.
+
+<p align="center">
+  <img src="docs/screenshots/glasses-tabs.png" alt="Glasses title strip with dim previous and next card names plus dot indicators" width="280">
+  <img src="docs/screenshots/glasses-cell-focused.png" alt="Glasses grid with one cell highlighted by a bright white focus border" width="280">
+</p>
+
+- In **tabs mode**, the current card name is bright, the previous and next
+  card names are dim ghost previews, and the dot row shows where you are in
+  the stack.
+- Swipe left or right on the title strip to cycle cards. If you're already
+  in **cells mode**, moving left from the leftmost cell or right from the
+  rightmost cell hands off to the previous or next card instead of stopping.
+- Swipe down, press **Down** or **Enter**, or tap the current card title to
+  enter **cells mode**.
+- In **cells mode**, the focused item gets a bright white border. Tap or
+  press **Enter** to fire it; swipe up or press **Escape** to return to the
+  tab strip.
+
 ## Tap-to-confirm on sensitive items
 
 Any item on a card can carry an optional `confirm` field that gates the
@@ -215,11 +291,16 @@ cards:
 ```
 
 When a confirm-gated item is tapped (or Enter'd from the keyboard nav),
-the cell turns yellow with **TAP AGAIN TO CONFIRM** at the bottom. A
-second tap within ~5 seconds fires the action; navigating away or
+the first interaction arms it instead of firing it:
+
+<p align="center">
+  <img src="docs/screenshots/glasses-cell-armed.png" alt="Glasses cell armed for confirmation with a yellow border and TAP AGAIN TO CONFIRM footer" width="320">
+</p>
+
+A second tap within ~5 seconds fires the action; navigating away or
 waiting it out cancels.
 
-The panel checkbox sets `confirm: true`. Time-windowed configs are
+The Dashboard checkbox sets `confirm: true`. Time-windowed configs are
 read-only in the panel UI — set them in the YAML editor.
 
 ## Troubleshooting
@@ -237,11 +318,9 @@ read-only in the panel UI — set them in the YAML editor.
 
 ## Status
 
-- **v0.7**: full glasses-side interactivity (tap-to-fire, scoped service
-  proxy, multi-card swipe + arrow navigation), YAML config editor, audit
-  log, hashed session tokens at rest, CSRF guard on mutating endpoints,
-  service blocklist for system-control operations.
-- **Roadmap**: HACS default-store submission, full HA-integration test
-  coverage (currently only pure-logic tests are wired up), mobile-
-  responsive panel CSS, brand assets (`icon.png`/`logo.png`), more
-  translations.
+- **v0.10.2**: consolidated panel layout (pairings, Dashboard, collapsible
+  setup/YAML/audit), value-as-headline grid cells, ghost-preview tabs,
+  tap-to-confirm with inline or YAML-defined rules, scoped proxy auth,
+  audit logging, and row-edge card handoff for Left/Right navigation.
+- **Roadmap**: HACS default-store submission, fuller HA integration test
+  coverage, brand assets (`icon.png`/`logo.png`), and more translations.
