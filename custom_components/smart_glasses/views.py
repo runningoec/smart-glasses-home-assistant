@@ -18,7 +18,7 @@ Three audiences, three auth modes:
    - ``POST /api/smart_glasses/glance/call_service`` — only services on cards
    - ``WS   /api/smart_glasses/glance/ws``         — filtered state_changed
 
-3. **Phone / desktop browser** (HA-logged-in user). The management surface:
+3. **Phone / desktop browser** (HA admin). The management surface:
    - ``GET  /api/smart_glasses/pairings``
    - ``POST /api/smart_glasses/pair/approve``     — bound to (code, session_id)
    - ``DELETE /api/smart_glasses/pair/{session_id}``
@@ -165,6 +165,16 @@ def _new_code() -> str:
 
 def _store(hass: HomeAssistant) -> SmartGlassesStore:
     return hass.data[DOMAIN]["store"]
+
+
+def _panel_admin_error(request: web.Request) -> tuple[str, int] | None:
+    """Return a client-facing error when a panel route lacks an admin user."""
+    user = request.get("hass_user")
+    if user is None:
+        return ("no user", 401)
+    if not getattr(user, "is_admin", False):
+        return ("admin required", 403)
+    return None
 
 
 # Sliding-window per-IP rate limit on /pair/start. In-memory; resets on HA
@@ -462,7 +472,7 @@ class PairTokenView(HomeAssistantView):
 
 
 # ---------------------------------------------------------------------------
-# Panel-facing views (HA auth required)
+# Panel-facing views (HA admin required)
 # ---------------------------------------------------------------------------
 
 
@@ -474,6 +484,8 @@ class PairingsListView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
+        if err := _panel_admin_error(request):
+            return self.json_message(err[0], status_code=err[1])
         hass: HomeAssistant = request.app["hass"]
         store = _store(hass)
         # Drop pending pairings whose clients have stopped polling, so the
@@ -507,6 +519,8 @@ class PairApproveView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request) -> web.Response:
+        if err := _panel_admin_error(request):
+            return self.json_message(err[0], status_code=err[1])
         hass: HomeAssistant = request.app["hass"]
         if not _csrf_guard(request):
             return self.json_message("cross-site request rejected", status_code=403)
@@ -535,8 +549,6 @@ class PairApproveView(HomeAssistantView):
 
         # The approving user is the one HA's auth middleware attached.
         user = request["hass_user"]
-        if user is None:
-            return self.json_message("no user", status_code=401)
 
         # Random opaque session token — ~256 bits. Hashed at rest, kept only
         # on the glasses' localStorage in plaintext after the one-shot pickup.
@@ -554,17 +566,12 @@ class PairApproveView(HomeAssistantView):
                 session_id=pairing["session_id"],
                 code=pairing["code"],
             )
-        except Exception as err:  # noqa: BLE001
-            # Surface the real error rather than letting aiohttp swallow it
-            # into HA's generic "Server got itself in trouble" 500.
+        except Exception:  # noqa: BLE001
             _LOGGER.exception(
                 "pair_approve failed for session %s",
                 _redact(pairing["session_id"]),
             )
-            return self.json_message(
-                f"approve failed: {type(err).__name__}: {err}",
-                status_code=500,
-            )
+            return self.json_message("approve failed", status_code=500)
         return self.json({"ok": True, "session_id": pairing["session_id"]})
 
 
@@ -579,6 +586,8 @@ class PairRevokeView(HomeAssistantView):
     requires_auth = True
 
     async def delete(self, request: web.Request, session_id: str) -> web.Response:
+        if err := _panel_admin_error(request):
+            return self.json_message(err[0], status_code=err[1])
         if not _csrf_guard(request):
             return self.json_message("cross-site request rejected", status_code=403)
         hass: HomeAssistant = request.app["hass"]
@@ -613,10 +622,14 @@ class CardsView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
+        if err := _panel_admin_error(request):
+            return self.json_message(err[0], status_code=err[1])
         hass: HomeAssistant = request.app["hass"]
         return self.json({"cards": _store(hass).cards})
 
     async def put(self, request: web.Request) -> web.Response:
+        if err := _panel_admin_error(request):
+            return self.json_message(err[0], status_code=err[1])
         hass: HomeAssistant = request.app["hass"]
         if not _csrf_guard(request):
             return self.json_message("cross-site request rejected", status_code=403)
@@ -660,6 +673,8 @@ class CardsYamlView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
+        if err := _panel_admin_error(request):
+            return self.json_message(err[0], status_code=err[1])
         hass: HomeAssistant = request.app["hass"]
         cards = _store(hass).cards
         text = yaml.safe_dump(
@@ -671,6 +686,8 @@ class CardsYamlView(HomeAssistantView):
         return web.Response(text=text, content_type="text/yaml")
 
     async def put(self, request: web.Request) -> web.Response:
+        if err := _panel_admin_error(request):
+            return self.json_message(err[0], status_code=err[1])
         hass: HomeAssistant = request.app["hass"]
         if not _csrf_guard(request):
             return self.json_message("cross-site request rejected", status_code=403)
@@ -683,8 +700,8 @@ class CardsYamlView(HomeAssistantView):
             return self.json_message("body must be utf-8", status_code=400)
         try:
             parsed = yaml.safe_load(text)
-        except yaml.YAMLError as err:
-            return self.json_message(f"invalid yaml: {err}", status_code=400)
+        except yaml.YAMLError:
+            return self.json_message("invalid yaml", status_code=400)
         # Accept either {cards: [...]} or a bare [...] for convenience.
         cards = parsed.get("cards") if isinstance(parsed, dict) else parsed
         err_msg = _validate_cards(hass, cards)
@@ -946,9 +963,9 @@ class GlanceCallServiceView(HomeAssistantView):
                 target={"entity_id": target_eid} if target_eid else {},
                 blocking=False,
             )
-        except Exception as err:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             _LOGGER.exception("glance call_service failed")
-            return self.json_message(f"call_service failed: {err}", status_code=500)
+            return self.json_message("call_service failed", status_code=500)
         return self.json({"ok": True})
 
 
@@ -1033,6 +1050,8 @@ class AuditView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
+        if err := _panel_admin_error(request):
+            return self.json_message(err[0], status_code=err[1])
         hass: HomeAssistant = request.app["hass"]
         return self.json({"audit": _store(hass).audit})
 

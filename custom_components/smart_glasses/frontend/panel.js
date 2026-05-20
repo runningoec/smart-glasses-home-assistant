@@ -952,11 +952,14 @@ class SmartGlassesPanel extends HTMLElement {
             const currentCard = this._cards.find(c => c.id === this._selectedCardId);
             list.innerHTML = matching.length === 0 ? `<div class="entity" style="cursor:default;">No matches.</div>` : matching.map((s) => {
                   const onCard = currentCard?.items.some(i => i.type === 'entity' && i.entity_id === s.entity_id);
+                  const entityId = esc(s.entity_id);
+                  const friendlyName = esc(s.attributes.friendly_name || s.entity_id);
+                  const state = esc(s.state);
                   return `
-                  <div class="entity ${onCard ? "selected" : ""}" data-action="toggle" data-entity="${s.entity_id}">
+                  <div class="entity ${onCard ? "selected" : ""}" data-action="toggle" data-entity="${entityId}">
                     <div>
-                      <div class="entity-name">${s.attributes.friendly_name || s.entity_id}</div>
-                      <div class="entity-id">${s.entity_id} · ${s.state}</div>
+                      <div class="entity-name">${friendlyName}</div>
+                      <div class="entity-id">${entityId} · ${state}</div>
                     </div>
                     <div>${onCard ? "✓" : ""}</div>
                   </div>

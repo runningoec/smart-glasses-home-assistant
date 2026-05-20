@@ -26,6 +26,31 @@ _hass_nabucasa.remote = SimpleNamespace(
 )
 sys.modules["hass_nabucasa"] = _hass_nabucasa
 
+# Home Assistant's HTTP setup imports aiohttp_cors lazily. The version pinned
+# in this local Windows env expects aiohttp.web.AppKey, which isn't present in
+# the aiohttp build installed here. The integration tests only need HA's HTTP
+# routes, not real CORS behaviour, so stub the tiny surface HA uses.
+_aiohttp_cors = ModuleType("aiohttp_cors")
+
+
+class _DummyCors:
+    def add(self, route, config=None):
+        return route
+
+
+class _DummyResourceOptions:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+def _dummy_setup(app, defaults=None):
+    return _DummyCors()
+
+
+_aiohttp_cors.ResourceOptions = _DummyResourceOptions
+_aiohttp_cors.setup = _dummy_setup
+sys.modules["aiohttp_cors"] = _aiohttp_cors
+
 # aiohttp may use aiodns/pycares on newer Linux runners. pycares lazily starts
 # a process-global daemon thread for safe channel shutdown the first time it is
 # used, and pytest-homeassistant then flags the creating test as leaking that
