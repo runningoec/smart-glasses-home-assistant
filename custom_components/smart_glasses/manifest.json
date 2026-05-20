@@ -4,10 +4,10 @@
   "codeowners": ["@runningoec"],
   "config_flow": true,
   "dependencies": ["frontend", "http"],
-  "documentation": "https://github.com/runningoec/hacs-smart-glasses",
+  "documentation": "https://github.com/runningoec/smart-glasses-home-assistant",
   "integration_type": "service",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/runningoec/hacs-smart-glasses/issues",
+  "issue_tracker": "https://github.com/runningoec/smart-glasses-home-assistant/issues",
   "requirements": [],
   "version": "0.10.2"
 }

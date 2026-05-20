@@ -5,9 +5,9 @@
 # Smart Glasses for Home Assistant
 
 [![HACS Custom][hacs-shield]][hacs-link]
-![hassfest](https://github.com/runningoec/hacs-smart-glasses/actions/workflows/hassfest.yml/badge.svg)
-![HACS validation](https://github.com/runningoec/hacs-smart-glasses/actions/workflows/hacs-validate.yml/badge.svg)
-![tests](https://github.com/runningoec/hacs-smart-glasses/actions/workflows/test.yml/badge.svg)
+![hassfest](https://github.com/runningoec/smart-glasses-home-assistant/actions/workflows/hassfest.yml/badge.svg)
+![HACS validation](https://github.com/runningoec/smart-glasses-home-assistant/actions/workflows/hacs-validate.yml/badge.svg)
+![tests](https://github.com/runningoec/smart-glasses-home-assistant/actions/workflows/test.yml/badge.svg)
 
 A HACS integration that adds a small Web App for the Meta Ray-Ban Display
 (and any other 600x600 glasses-style HUD) directly to your Home Assistant
@@ -61,10 +61,10 @@ flowchart LR
 
 ## Install
 
-[![Open your Home Assistant instance and add this repository inside HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=runningoec&repository=hacs-smart-glasses&category=integration)
+[![Open your Home Assistant instance and add this repository inside HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=runningoec&repository=smart-glasses-home-assistant&category=integration)
 
 1. **HACS** → ⋮ → **Custom repositories** → URL
-   `https://github.com/runningoec/hacs-smart-glasses`, category **Integration** → **Add**.
+  `https://github.com/runningoec/smart-glasses-home-assistant`, category **Integration** → **Add**.
 2. Find "Smart Glasses" in HACS → **Download**.
 3. Restart Home Assistant when prompted.
 4. **Settings → Devices & Services → + Add Integration → "Smart Glasses"** —
