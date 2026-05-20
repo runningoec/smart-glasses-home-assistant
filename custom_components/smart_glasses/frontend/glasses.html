@@ -512,6 +512,25 @@
 
     const DOOR_LIKE = new Set(["door", "garage_door", "window", "opening"]);
 
+    // Round a numeric state to a sensible number of decimals.
+    // HA sets ``suggested_display_precision`` on most sensors and uses it
+    // for its own UI; reuse it so the glasses match what HA shows
+    // elsewhere. Falls back to a magnitude-based heuristic for template
+    // sensors that don't declare a precision explicitly.
+    function formatNumeric(raw, attrs) {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return raw;
+      const declared = attrs?.suggested_display_precision;
+      if (Number.isInteger(declared) && declared >= 0) {
+        return n.toFixed(declared);
+      }
+      // Integer values stay integers ("78" not "78.0").
+      if (Number.isInteger(n)) return String(n);
+      const abs = Math.abs(n);
+      const decimals = abs >= 100 ? 0 : abs >= 10 ? 1 : abs >= 1 ? 2 : 3;
+      return n.toFixed(decimals);
+    }
+
     function fmtState(s) {
       const v = s.state;
       const dom = s.entity_id.split(".")[0];
@@ -545,7 +564,8 @@
       // report on/off normally — caught by the next branch.
       if (v === "on" || v === "off") return v.toUpperCase();
       const unit = s.attributes?.unit_of_measurement;
-      return unit ? `${v} ${unit}` : v;
+      const display = formatNumeric(v, s.attributes);
+      return unit ? `${display} ${unit}` : display;
     }
 
     // Map an entity's domain to the natural service+verb its tap should
