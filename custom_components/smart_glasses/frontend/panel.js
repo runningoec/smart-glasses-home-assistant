@@ -64,6 +64,7 @@ class SmartGlassesPanel extends HTMLElement {
     this._yamlMessage = "";   // last apply/validation message
     this._audit = [];         // audit log entries, newest first
     this._toast = "";         // transient banner shown above the panel
+    this._addTab = "entity";  // sub-tab in the Add panel — "entity" | "action"
     this._dirtyCards = false;
     this._loaded = false;
     this._lastRenderKey = null;       // cheap content hash; skip render if unchanged
@@ -340,6 +341,7 @@ class SmartGlassesPanel extends HTMLElement {
       ym: this._yamlMessage,
       au: this._audit,
       t: this._toast,
+      at: this._addTab,
     });
     if (key === this._lastRenderKey && this.children.length > 0) {
       return;
@@ -503,149 +505,236 @@ class SmartGlassesPanel extends HTMLElement {
           cursor: pointer; user-select: none; margin-right: 8px;
         }
         .confirm-toggle input { margin: 0; }
+        .card-header {
+          display: flex; align-items: center; justify-content: space-between;
+          margin-bottom: 12px; gap: 12px;
+        }
+        .card-header h2 { margin: 0; font-size: 22px; }
+        .card-pills {
+          display: flex; flex-wrap: wrap; gap: 6px;
+          padding: 0 0 12px; margin-bottom: 16px;
+          border-bottom: 1px solid var(--divider-color, #333);
+        }
+        .card-pill {
+          padding: 6px 12px; border-radius: 16px;
+          background: var(--secondary-background-color, #2a2a2a);
+          color: var(--secondary-text-color);
+          font-size: 14px; font-weight: 500;
+          cursor: pointer; user-select: none;
+          transition: background 0.15s, color 0.15s, transform 0.1s;
+          border: 1px solid transparent;
+          display: inline-flex; align-items: center; gap: 6px;
+        }
+        .card-pill:hover { transform: translateY(-1px); }
+        .card-pill.active {
+          background: var(--primary-color, #03a9f4);
+          color: white;
+        }
+        .card-pill.add-pill {
+          background: transparent;
+          border: 1px dashed var(--divider-color, #555);
+          color: var(--secondary-text-color);
+        }
+        .card-pill.add-pill:hover {
+          border-color: var(--primary-color, #03a9f4);
+          color: var(--primary-color, #03a9f4);
+        }
+        .card-pill .item-count {
+          opacity: 0.7; font-size: 12px; font-weight: 400;
+        }
+        .editor-section { margin-top: 20px; }
+        .editor-section h3 {
+          font-size: 15px; font-weight: 600; margin: 0 0 10px;
+          color: var(--secondary-text-color); text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        .editor-toolbar {
+          display: flex; align-items: center; gap: 10px;
+          margin-bottom: 12px;
+        }
+        .editor-toolbar input[type="text"] { flex: 1; }
+        .subtabs {
+          display: flex; gap: 4px; margin-bottom: 12px;
+          border-bottom: 1px solid var(--divider-color, #333);
+        }
+        .subtab {
+          padding: 8px 14px; cursor: pointer;
+          color: var(--secondary-text-color); font-size: 13px; font-weight: 600;
+          border-bottom: 2px solid transparent;
+          margin-bottom: -1px;
+          transition: color 0.15s, border-color 0.15s;
+        }
+        .subtab:hover { color: var(--primary-text-color); }
+        .subtab.active {
+          color: var(--primary-color, #03a9f4);
+          border-bottom-color: var(--primary-color, #03a9f4);
+        }
+        .action-form {
+          display: grid; gap: 8px; margin-top: 8px;
+          grid-template-columns: 1fr 1fr 1fr auto;
+        }
+        .action-form input { min-width: 0; }
+        @media (max-width: 720px) {
+          .action-form { grid-template-columns: 1fr; }
+        }
       </style>
       <div class="root">
         ${this._toast ? `<div class="toast">${esc(this._toast)}</div>` : ""}
         ${this._error ? `<div class="error">${esc(this._error)}</div>` : ""}
 
+        <!--
+          Pairings up top: this is what you actually touch day to day —
+          approving a new device, revoking an old one. The setup info
+          card lives below, collapsed once you have any pairing.
+        -->
         <div class="card">
-          <details class="setup" ${setupOpen}>
-            <summary>Add to your glasses</summary>
-            <div class="meta" style="margin-top:8px">
-              Requires <strong>Meta AI app v272+</strong> and glasses firmware
-              <strong>v125+</strong>. Your HA must be reachable on HTTPS from the
-              open internet (Nabu Casa, Cloudflare Tunnel, or your own reverse proxy).
-            </div>
+          <div class="card-header">
+            <h2>Glasses pairings</h2>
+            <span class="meta">${this._pairings.length} ${this._pairings.length === 1 ? "device" : "devices"}</span>
+          </div>
+          <div class="meta">When the glasses load the Web App, they show a 6-character code. Approve it here.</div>
 
-            <div style="font-weight:600; margin-top:14px;">Web App URL</div>
-            <div class="url-box ${originLooksPublic ? "" : "placeholder"}">
-              <code data-action="webapp-url">${webAppUrl}</code>
-              <button data-action="copy-webapp-url">Copy</button>
-              <span class="copy-toast" data-copy-toast>Copied</span>
-            </div>
-            ${originLooksPublic
-              ? `<div class="meta">Auto-filled from your current address. If your glasses pair from outside the LAN, use that address instead.</div>`
-              : `<div class="meta">Replace <code>&lt;your-ha-public-domain&gt;</code> with the address you use to reach HA from the internet.</div>`}
+          <div style="margin-top: 16px;">
+            ${this._pairings.length === 0
+              ? `<div class="meta">No pairings yet — launch the Web App on your glasses and a pending code will appear here.</div>`
+              : this._pairings.map((p) => `
+                  <div class="pair-row">
+                    <div>
+                      <span class="pair-code">${esc(p.code)}</span>
+                      <span class="pill">${p.approved ? "approved" : "pending"}</span>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                      ${p.approved ? "" : `<button data-action="approve-row" data-code="${esc(p.code)}" data-session="${esc(p.session_id)}">Approve</button>`}
+                      <button class="danger" data-action="revoke" data-session="${esc(p.session_id)}">Revoke</button>
+                    </div>
+                  </div>
+                `).join("")
+            }
+          </div>
 
-            <ol class="steps">
-              <li><strong>Enable Developer Mode in Meta AI</strong> (one-time):
-                  Meta AI app → Settings → App Info → tap the app version number
-                  <strong>5 times</strong> in a row → confirm.</li>
-              <li><strong>Add the Web App</strong>:
-                  Meta AI app → App Settings → App Connections → Web Apps →
-                  <strong>Add a Web App</strong> → name it (e.g. <code>HA Glasses</code>)
-                  → paste the URL above → <strong>Connect</strong>.</li>
-              <li><strong>Launch on the glasses</strong>: the new app appears at
-                  the bottom of your app grid. Open it.</li>
-              <li><strong>Pair</strong>: the glasses show a 6-character code →
-                  type it in the <em>Glasses pairings</em> card below →
-                  <strong>Approve</strong>.</li>
-            </ol>
+          <details style="margin-top:14px;">
+            <summary style="cursor:pointer; font-size:13px; color:var(--secondary-text-color);">
+              Approve by typing a code instead
+            </summary>
+            <div class="approve-row" style="margin-top:10px;">
+              <input type="text" placeholder="ABCDEF" data-action="code" value="${this._approveCode}" maxlength="8" style="text-transform: uppercase; font-family: monospace; font-size: 18px; letter-spacing: 4px;">
+              <button data-action="approve">Approve</button>
+            </div>
           </details>
         </div>
 
+        <!--
+          Dashboard editor: consolidates the old "Cards" + "Edit Card" +
+          "Add Entities" + "Add Custom Action" cards into one coherent
+          flow. Cards-pill row at top picks which card you're editing;
+          the rest of the card is the editor for that card.
+        -->
         <div class="card">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h2 style="margin: 0;">Cards</h2>
-            <button data-action="add-card" class="secondary" style="padding: 6px 12px;">+ Add Card</button>
+          <div class="card-header">
+            <h2>Dashboard</h2>
+            <button data-action="save" ${this._dirtyCards ? "" : "disabled"}>
+              ${this._dirtyCards ? "Save changes" : "All saved"}
+            </button>
           </div>
-          <div class="meta">Manage your dashboard cards. Each card holds up to 8 items (entities or actions).</div>
-          <div class="entity-list" style="margin-top: 0; margin-bottom: 16px; max-height: 200px;">
-            ${this._cards.length === 0 ? '<div class="entity" style="cursor:default;">No cards.</div>' : this._cards.map(c => `
-              <div class="entity ${this._selectedCardId === c.id ? "selected" : ""}" data-action="select-card" data-card="${esc(c.id)}">
-                <div>
-                  <div class="entity-name">${esc(c.name)}</div>
-                  <div class="entity-id">${c.items.length} / ${MAX_ENTITIES} items</div>
-                </div>
-                ${this._selectedCardId === c.id ? "<div>▶</div>" : ""}
+          <div class="meta">Each card holds up to ${MAX_ENTITIES} items (entities or custom service actions). Tap a card to edit it.</div>
+
+          <div class="card-pills" style="margin-top: 14px;">
+            ${this._cards.map(c => `
+              <div class="card-pill ${this._selectedCardId === c.id ? "active" : ""}" data-action="select-card" data-card="${esc(c.id)}">
+                ${esc(c.name)}
+                <span class="item-count">${c.items.length}</span>
               </div>
             `).join("")}
+            <div class="card-pill add-pill" data-action="add-card">+ Add card</div>
           </div>
-          <div>
-            <button data-action="save" ${this._dirtyCards ? "" : "disabled"}>Save Configuration</button>
-          </div>
-        </div>
 
-        ${currentCard ? `
-        <div class="card">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h2 style="margin: 0;">Edit Card</h2>
-            <button data-action="remove-card" class="danger" style="padding: 6px 12px;">Delete Card</button>
-          </div>
-          <input type="text" data-action="rename-card" value="${esc(currentCard.name)}" placeholder="Card Name">
-          
-          <h3 style="margin-top: 24px; font-size: 16px;">Items (${currentCard.items.length}/${MAX_ENTITIES})</h3>
-          ${currentCard.items.length === 0
-            ? `<div class="meta">No items on this card.</div>`
-            : currentCard.items.map((item, idx) => {
-                const confirmCell = (() => {
-                  // Time-bound confirm is YAML-only (the panel UI would get
-                  // crowded with date/time pickers); show a readonly badge.
-                  if (item.confirm && typeof item.confirm === "object") {
-                    return `<span class="pill" title="Set via YAML editor">Confirm: ${esc(describeConfirm(item.confirm))}</span>`;
+          ${currentCard ? `
+            <div class="editor-toolbar">
+              <input type="text" data-action="rename-card" value="${esc(currentCard.name)}" placeholder="Card name">
+              <button class="danger" data-action="remove-card" style="padding: 8px 14px;">Delete card</button>
+            </div>
+
+            <div class="editor-section">
+              <h3>Items · ${currentCard.items.length}/${MAX_ENTITIES}</h3>
+              ${currentCard.items.length === 0
+                ? `<div class="meta">No items yet — add one below.</div>`
+                : currentCard.items.map((item, idx) => {
+                    const confirmCell = (() => {
+                      if (item.confirm && typeof item.confirm === "object") {
+                        return `<span class="pill" title="Set via YAML editor">Confirm: ${esc(describeConfirm(item.confirm))}</span>`;
+                      }
+                      const checked = item.confirm === true ? "checked" : "";
+                      return `<label class="confirm-toggle"><input type="checkbox" data-action="toggle-confirm" data-index="${idx}" ${checked}> Confirm</label>`;
+                    })();
+                    if (item.type === 'entity') {
+                      const s = this._hass.states[item.entity_id];
+                      const name = s?.attributes.friendly_name || item.entity_id;
+                      const state = s ? `${s.state}${s.attributes.unit_of_measurement ? " " + s.attributes.unit_of_measurement : ""}` : "—";
+                      return `
+                        <div class="selected-row">
+                          <div style="flex:1; min-width:0;">
+                            <div class="entity-name">${esc(name)}</div>
+                            <div class="entity-id">${esc(item.entity_id)} · <span style="color:var(--primary-text-color)">${esc(state)}</span></div>
+                          </div>
+                          ${confirmCell}
+                          <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
+                        </div>
+                      `;
+                    } else if (item.type === 'action') {
+                      return `
+                        <div class="selected-row">
+                          <div style="flex:1; min-width:0;">
+                            <div class="entity-name">${esc(item.name)}</div>
+                            <div class="entity-id">${esc(item.action)}${item.target ? ` · ${esc(item.target)}` : ''} <span class="pill" style="margin-left: 4px; background: rgba(3, 169, 244, 0.2); color: #03a9f4;">action</span></div>
+                          </div>
+                          ${confirmCell}
+                          <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
+                        </div>
+                      `;
+                    }
+                  }).join("")
+              }
+            </div>
+
+            <div class="editor-section">
+              <h3>Add to this card</h3>
+              <div class="subtabs">
+                <div class="subtab ${this._addTab === "entity" ? "active" : ""}" data-action="add-tab" data-tab="entity">Entity</div>
+                <div class="subtab ${this._addTab === "action" ? "active" : ""}" data-action="add-tab" data-tab="action">Custom action</div>
+              </div>
+
+              ${this._addTab === "entity" ? `
+                <input type="text" placeholder="Search by name or entity_id…" data-action="search" value="${this._search}">
+                <div class="entity-list">
+                  ${matching.length === 0
+                    ? `<div class="entity" style="cursor:default;">No matches.</div>`
+                    : matching.map((s) => {
+                        const onCard = currentCard.items.some(i => i.type === 'entity' && i.entity_id === s.entity_id);
+                        return `
+                        <div class="entity ${onCard ? "selected" : ""}" data-action="toggle" data-entity="${esc(s.entity_id)}">
+                          <div>
+                            <div class="entity-name">${esc(s.attributes.friendly_name || s.entity_id)}</div>
+                            <div class="entity-id">${esc(s.entity_id)} · ${esc(s.state)}</div>
+                          </div>
+                          <div>${onCard ? "✓" : ""}</div>
+                        </div>
+                      `}).join("")
                   }
-                  const checked = item.confirm === true ? "checked" : "";
-                  return `<label class="confirm-toggle"><input type="checkbox" data-action="toggle-confirm" data-index="${idx}" ${checked}> Confirm</label>`;
-                })();
-                if (item.type === 'entity') {
-                  const s = this._hass.states[item.entity_id];
-                  const name = s?.attributes.friendly_name || item.entity_id;
-                  const state = s ? `${s.state}${s.attributes.unit_of_measurement ? " " + s.attributes.unit_of_measurement : ""}` : "—";
-                  return `
-                    <div class="selected-row">
-                      <div style="flex:1;">
-                        <div class="entity-name">${esc(name)}</div>
-                        <div class="entity-id">${esc(item.entity_id)} · <span style="color:var(--primary-text-color)">${esc(state)}</span></div>
-                      </div>
-                      ${confirmCell}
-                      <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
-                    </div>
-                  `;
-                } else if (item.type === 'action') {
-                  return `
-                    <div class="selected-row">
-                      <div style="flex:1;">
-                        <div class="entity-name">${esc(item.name)}</div>
-                        <div class="entity-id">${esc(item.action)}${item.target ? ` · ${esc(item.target)}` : ''} <span class="pill" style="margin-left: 4px; background: rgba(3, 169, 244, 0.2); color: #03a9f4;">action</span></div>
-                      </div>
-                      ${confirmCell}
-                      <button class="secondary" data-action="remove-item" data-index="${idx}">Remove</button>
-                    </div>
-                  `;
-                }
-              }).join("")
-          }
-
-          <h3 style="margin-top: 24px; font-size: 16px;">Add Custom Action</h3>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-            <input type="text" id="action-name" placeholder="Name (e.g. Lights On)" style="flex: 1; min-width: 150px;">
-            <input type="text" id="action-service" placeholder="Service (e.g. light.turn_on)" style="flex: 1; min-width: 150px;">
-            <input type="text" id="action-target" placeholder="Target (optional, e.g. light.kitchen)" style="flex: 1; min-width: 150px;">
-            <button data-action="add-custom-action" class="secondary">Add</button>
-          </div>
+                </div>
+              ` : `
+                <div class="meta">Fire any HA service when tapped. Pin specific service+target pairs you want available on the glasses.</div>
+                <div class="action-form">
+                  <input type="text" id="action-name" placeholder="Label (e.g. Lights On)">
+                  <input type="text" id="action-service" placeholder="Service (e.g. light.turn_on)">
+                  <input type="text" id="action-target" placeholder="Target (optional)">
+                  <button data-action="add-custom-action">Add</button>
+                </div>
+              `}
+            </div>
+          ` : `
+            <div class="meta" style="margin-top: 12px;">Add a card to get started.</div>
+          `}
         </div>
-
-        <div class="card">
-          <h2>Add Entities to Card</h2>
-          <input type="text" placeholder="Search by name or entity_id…" data-action="search" value="${this._search}">
-          <div class="entity-list">
-            ${matching.length === 0
-              ? `<div class="entity" style="cursor:default;">No matches.</div>`
-              : matching.map((s) => {
-                  const onCard = currentCard.items.some(i => i.type === 'entity' && i.entity_id === s.entity_id);
-                  return `
-                  <div class="entity ${onCard ? "selected" : ""}" data-action="toggle" data-entity="${esc(s.entity_id)}">
-                    <div>
-                      <div class="entity-name">${esc(s.attributes.friendly_name || s.entity_id)}</div>
-                      <div class="entity-id">${esc(s.entity_id)} · ${esc(s.state)}</div>
-                    </div>
-                    <div>${onCard ? "✓" : ""}</div>
-                  </div>
-                `}).join("")
-            }
-          </div>
-        </div>
-        ` : ""}
 
         <div class="card">
           <details>
@@ -679,32 +768,46 @@ class SmartGlassesPanel extends HTMLElement {
           </details>
         </div>
 
+        <!--
+          Setup info: redundant once you have any pairing. Defaulted open
+          only on a fresh install (no pairings yet) so first-time users
+          see the Web-App URL + steps right away; collapsed thereafter.
+        -->
         <div class="card">
-          <h2>Glasses pairings</h2>
-          <div class="meta">When the glasses load the Web App, they show a short code. Type it here to approve. The glasses then poll for the access token.</div>
+          <details class="setup" ${setupOpen}>
+            <summary style="cursor:pointer; font-size:20px; font-weight:600;">
+              Add to your glasses <span class="meta" style="font-weight:400;">(one-time setup)</span>
+            </summary>
+            <div class="meta" style="margin-top:8px">
+              Requires <strong>Meta AI app v272+</strong> and glasses firmware
+              <strong>v125+</strong>. Your HA must be reachable on HTTPS from the
+              open internet (Nabu Casa, Cloudflare Tunnel, or your own reverse proxy).
+            </div>
 
-          <div class="approve-row">
-            <input type="text" placeholder="ABCDEF" data-action="code" value="${this._approveCode}" maxlength="8" style="text-transform: uppercase; font-family: monospace; font-size: 18px; letter-spacing: 4px;">
-            <button data-action="approve">Approve</button>
-          </div>
+            <div style="font-weight:600; margin-top:14px;">Web App URL</div>
+            <div class="url-box ${originLooksPublic ? "" : "placeholder"}">
+              <code data-action="webapp-url">${webAppUrl}</code>
+              <button data-action="copy-webapp-url">Copy</button>
+              <span class="copy-toast" data-copy-toast>Copied</span>
+            </div>
+            ${originLooksPublic
+              ? `<div class="meta">Auto-filled from your current address. If your glasses pair from outside the LAN, use that address instead.</div>`
+              : `<div class="meta">Replace <code>&lt;your-ha-public-domain&gt;</code> with the address you use to reach HA from the internet.</div>`}
 
-          <div style="margin-top: 16px;">
-            ${this._pairings.length === 0
-              ? `<div class="meta">No pairings yet.</div>`
-              : this._pairings.map((p) => `
-                  <div class="pair-row">
-                    <div>
-                      <span class="pair-code">${esc(p.code)}</span>
-                      <span class="pill">${p.approved ? "approved" : "pending"}</span>
-                    </div>
-                    <div style="display:flex; gap:8px;">
-                      ${p.approved ? "" : `<button data-action="approve-row" data-code="${esc(p.code)}" data-session="${esc(p.session_id)}">Approve</button>`}
-                      <button class="danger" data-action="revoke" data-session="${esc(p.session_id)}">Revoke</button>
-                    </div>
-                  </div>
-                `).join("")
-            }
-          </div>
+            <ol class="steps">
+              <li><strong>Enable Developer Mode in Meta AI</strong> (one-time):
+                  Meta AI app → Settings → App Info → tap the app version number
+                  <strong>5 times</strong> in a row → confirm.</li>
+              <li><strong>Add the Web App</strong>:
+                  Meta AI app → App Settings → App Connections → Web Apps →
+                  <strong>Add a Web App</strong> → name it (e.g. <code>HA Glasses</code>)
+                  → paste the URL above → <strong>Connect</strong>.</li>
+              <li><strong>Launch on the glasses</strong>: the new app appears at
+                  the bottom of your app grid. Open it.</li>
+              <li><strong>Pair</strong>: the glasses show a 6-character code →
+                  approve it in the <em>Glasses pairings</em> card above.</li>
+            </ol>
+          </details>
         </div>
 
         <div class="card">
@@ -783,6 +886,11 @@ class SmartGlassesPanel extends HTMLElement {
             this._dirtyCards = true;
             this._render();
           }
+        } else if (action === "add-tab") {
+          // Switch the Add section between "Entity" and "Custom action"
+          // sub-tabs without losing other inputs.
+          this._addTab = el.dataset.tab === "action" ? "action" : "entity";
+          this._render();
         } else if (action === "toggle-confirm") {
           // Per-item "Require confirmation on glasses" toggle. We don't
           // re-render on each click because that would lose the checkbox's
