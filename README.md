@@ -61,6 +61,8 @@ flowchart LR
 
 ## Install
 
+[![Open your Home Assistant instance and add this repository inside HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=runningoec&repository=hacs-smart-glasses&category=integration)
+
 1. **HACS** → ⋮ → **Custom repositories** → URL
    `https://github.com/runningoec/hacs-smart-glasses`, category **Integration** → **Add**.
 2. Find "Smart Glasses" in HACS → **Download**.
@@ -322,5 +324,5 @@ read-only in the panel UI — set them in the YAML editor.
   setup/YAML/audit), value-as-headline grid cells, ghost-preview tabs,
   tap-to-confirm with inline or YAML-defined rules, scoped proxy auth,
   audit logging, and row-edge card handoff for Left/Right navigation.
-- **Roadmap**: HACS default-store submission, fuller HA integration test
-  coverage, brand assets (`icon.png`/`logo.png`), and more translations.
+- **Roadmap**: first GitHub release, HACS default-store submission,
+  fuller HA integration test coverage, and more translations.
