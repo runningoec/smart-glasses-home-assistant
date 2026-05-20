@@ -1,4 +1,5 @@
 # pytest-homeassistant-custom-component pins specific versions of pytest,
 # pytest-asyncio, homeassistant, and the surrounding test helpers — let it
 # do the resolving rather than pinning anything ourselves.
+home-assistant-frontend
 pytest-homeassistant-custom-component
