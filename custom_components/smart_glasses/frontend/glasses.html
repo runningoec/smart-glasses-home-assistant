@@ -856,7 +856,8 @@
     //
     //   tabs mode:   ←/→ change card  ·  ↓ or Enter enter cells  ·
     //                Shift+Esc force re-pair
-    //   cells mode:  ↑/↓ walk items   ·  ←/→ also walk items     ·
+    //   cells mode:  ↑/↓ walk items   ·  ←/→ walk items, then wrap
+    //                across cards at the row edge                ·
     //                Enter trigger item · Esc back to tabs · Shift+Esc re-pair
     document.addEventListener("keydown", (evt) => {
       if (evt.key === "Escape" && evt.shiftKey) {
@@ -916,15 +917,24 @@
         renderGrid();
         evt.preventDefault();
       } else if (evt.key === "ArrowLeft") {
-        // Move within the row; stay put at the left edge.
-        if (col > 0) focusedCellIndex--;
-        renderGrid();
+        // Walking left off the row edge should feel like swiping the tab
+        // strip: keep moving, but on the previous card.
+        if (col > 0) {
+          focusedCellIndex--;
+          renderGrid();
+        } else {
+          switchCard(-1);
+        }
         evt.preventDefault();
       } else if (evt.key === "ArrowRight") {
-        // Move within the row; stay put at the right edge OR if the next
-        // cell doesn't exist (last row of a ragged grid).
-        if (col < cols - 1 && focusedCellIndex + 1 < items.length) focusedCellIndex++;
-        renderGrid();
+        // Same handoff on the right edge, including ragged last rows where
+        // the next visual slot does not exist.
+        if (col < cols - 1 && focusedCellIndex + 1 < items.length) {
+          focusedCellIndex++;
+          renderGrid();
+        } else {
+          switchCard(1);
+        }
         evt.preventDefault();
       } else if (evt.key === "Enter") {
         triggerFocusedCell();
