@@ -320,6 +320,26 @@ waiting it out cancels.
 The Dashboard checkbox sets `confirm: true`. Time-windowed configs are
 read-only in the panel UI — set them in the YAML editor.
 
+## Voice control with Meta AI (WebMCP)
+
+On glasses where Meta has enabled WebMCP (Developer Mode or the staged
+rollout), the Web App registers three tools with Meta AI while it is on
+screen, so you can say things like *"Hey Meta, turn on the bedroom
+lights"* or *"Hey Meta, what's on my Kitchen card?"*:
+
+| Tool | What it does |
+|---|---|
+| `list_home_items` | Read-only list of cards, items, and current states. |
+| `show_card` | Switches the display to a card by name. |
+| `activate_item` | Same as tapping an item. Ambiguous names come back as a question for the user. |
+
+The tools go through the same card-scoped proxy as a tap, so Meta AI can
+reach exactly what is on your cards and nothing else. Items with
+`confirm` are never fired by voice alone: the assistant arms the cell on
+screen and you tap it within 10 seconds to complete the action. Tools are
+unregistered when you leave the app or re-pair. On glasses without
+WebMCP nothing changes.
+
 ## Troubleshooting
 
 | Symptom on glasses / panel | What it means | What to do |

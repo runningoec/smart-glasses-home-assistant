@@ -417,7 +417,9 @@
       return m;
     }
 
-    async function callService(domain, service, targetEid) {
+    // Returns the HTTP status so voice tools can report the outcome; tap
+    // callers ignore it and rely on the status line.
+    async function callService(domain, service, targetEid, signal) {
       const body = { domain, service };
       if (targetEid) body.target = { entity_id: targetEid };
       const res = await fetch("/api/smart_glasses/glance/call_service", {
@@ -427,15 +429,17 @@
           "content-type": "application/json",
         },
         body: JSON.stringify(body),
+        signal,
       });
-      if (res.status === 401) { tokenInvalid(); return; }
+      if (res.status === 401) { tokenInvalid(); return res.status; }
       if (res.status === 403) {
         setStatus("Action not allowed");
-        return;
+        return res.status;
       }
       if (!res.ok) {
         setStatus(`call_service ${res.status}`);
       }
+      return res.status;
     }
 
     function connectWebsocket() {
@@ -502,6 +506,7 @@
 
     function tokenInvalid() {
       // Drop credentials and re-pair.
+      unregisterVoiceTools();
       localStorage.removeItem(LS_TOKEN_KEY);
       localStorage.removeItem(LS_SESSION_KEY);
       token = null;
@@ -744,6 +749,18 @@
       armed = null;
     }
 
+    function serviceForItem(item) {
+      if (item.type === "action") {
+        const parts = item.action.split(".");
+        return parts.length === 2 ? [parts[0], parts[1], item.target ?? null] : null;
+      }
+      if (item.entity_id) {
+        const [d, s] = defaultServiceFor(item.entity_id);
+        return [d, s, item.entity_id];
+      }
+      return null;
+    }
+
     function fireItem(item, cellIdx) {
       // Confirm gate: two taps within ARM_WINDOW_MS. The first tap arms
       // (and shows "TAP AGAIN TO CONFIRM" on the cell); the second tap
@@ -765,14 +782,8 @@
         // Confirmed — fall through to actually fire.
         clearArmed();
       }
-      if (item.type === "action") {
-        const parts = item.action.split(".");
-        if (parts.length !== 2) return;
-        callService(parts[0], parts[1], item.target ?? null);
-      } else if (item.entity_id) {
-        const [d, s] = defaultServiceFor(item.entity_id);
-        callService(d, s, item.entity_id);
-      }
+      const call = serviceForItem(item);
+      if (call) callService(...call);
     }
 
     function setStatus(txt) {
@@ -815,6 +826,185 @@
       fireItem(item, idx);
     });
 
+    // ----- WebMCP voice tools (Meta AI) -----------------------------------
+    //
+    // When the glasses expose document.modelContext, register a small set
+    // of tools so "Hey Meta, turn on the bedroom lights" works while this
+    // app is on screen. Every tool reuses the same card-scoped proxy as a
+    // tap — the assistant can reach exactly what the user could tap, and
+    // confirm-gated items still need a physical tap to fire.
+    const VOICE_ARM_WINDOW_MS = 10000;
+    let webmcpAbort = null;
+
+    const modelContext = () => document.modelContext ?? navigator.modelContext ?? null;
+    const normalize = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+    function itemLabel(item) {
+      if (item.type === "action") return item.name || item.action;
+      return states.get(item.entity_id)?.attributes?.friendly_name || item.name || item.entity_id;
+    }
+
+    function describeItem(item) {
+      const out = {
+        name: itemLabel(item),
+        kind: item.type === "action" ? "action" : item.entity_id.split(".")[0],
+        needs_confirmation: shouldConfirm(item),
+      };
+      if (item.type !== "action") {
+        out.entity_id = item.entity_id;
+        const s = states.get(item.entity_id);
+        out.state = s ? fmtState(s) : "unknown";
+      }
+      return out;
+    }
+
+    // Resolve a spoken name to one item. Exact name/entity_id beats a
+    // substring match; more than one candidate is an error the assistant
+    // can resolve by asking the user.
+    function findItems(query, cardQuery) {
+      const q = normalize(query);
+      const cq = normalize(cardQuery);
+      const hits = { exact: [], partial: [] };
+      cards.forEach((card, cardIdx) => {
+        if (cq && !normalize(card.name).includes(cq)) return;
+        (card.items ?? []).forEach((item, cellIdx) => {
+          const names = [normalize(itemLabel(item)), normalize(item.entity_id)].filter(Boolean);
+          const hit = { card, cardIdx, item, cellIdx };
+          if (names.some((n) => n === q)) hits.exact.push(hit);
+          else if (q && names.some((n) => n.includes(q))) hits.partial.push(hit);
+        });
+      });
+      return hits.exact.length ? hits.exact : hits.partial;
+    }
+
+    function showCell(cardIdx, cellIdx) {
+      currentCardIndex = cardIdx;
+      focusMode = "cells";
+      focusedCellIndex = cellIdx;
+    }
+
+    const TOOLS = [
+      {
+        name: "list_home_items",
+        description: "List the Home Assistant cards on the glasses and the items on each, with current state. Use this to find what can be controlled.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async execute() {
+          return {
+            cards: cards.map((c) => ({ card: c.name, items: (c.items ?? []).map(describeItem) })),
+          };
+        },
+      },
+      {
+        name: "show_card",
+        description: "Switch the glasses display to a Home Assistant card by name.",
+        inputSchema: {
+          type: "object",
+          properties: { card: { type: "string", description: "Card name, e.g. Bedroom." } },
+          required: ["card"],
+        },
+        annotations: { readOnlyHint: true },
+        async execute({ card } = {}) {
+          const cq = normalize(card);
+          const idx = cards.findIndex((c) => normalize(c.name) === cq);
+          const fallback = idx >= 0 ? idx : cards.findIndex((c) => cq && normalize(c.name).includes(cq));
+          if (fallback < 0) {
+            return {
+              error: "card_not_found",
+              message: `No card named "${card}".`,
+              next_action: `Available cards: ${cards.map((c) => c.name).join(", ")}.`,
+            };
+          }
+          if (armed) clearArmed();
+          currentCardIndex = fallback;
+          focusMode = "tabs";
+          focusedCellIndex = 0;
+          renderGrid();
+          return { ok: true, card: cards[fallback].name };
+        },
+      },
+      {
+        name: "activate_item",
+        description: "Activate one Home Assistant item on the glasses, exactly like tapping it: toggles a light or switch, runs a scene or script, presses a button, or runs a custom action. Items marked needs_confirmation are only armed; the user must tap the highlighted cell to fire them.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            item: { type: "string", description: "Item name or entity_id, e.g. Bedroom lights." },
+            card: { type: "string", description: "Optional card name to narrow the search." },
+          },
+          required: ["item"],
+        },
+        async execute({ item, card } = {}, { signal } = {}) {
+          if (typeof item !== "string" || !item.trim()) {
+            return { error: "missing_item", message: "Say which item to activate." };
+          }
+          const hits = findItems(item, typeof card === "string" ? card : "");
+          if (hits.length === 0) {
+            return {
+              error: "item_not_found",
+              message: `Nothing on the glasses matches "${item}".`,
+              next_action: "Call list_home_items to see what can be controlled.",
+            };
+          }
+          if (hits.length > 1) {
+            return {
+              error: "ambiguous_item",
+              message: `"${item}" matches ${hits.length} items.`,
+              candidates: hits.map((h) => `${itemLabel(h.item)} (${h.card.name})`),
+              next_action: "Ask the user which one they meant, then call again with the card name.",
+            };
+          }
+          const hit = hits[0];
+          const label = itemLabel(hit.item);
+          if (shouldConfirm(hit.item)) {
+            // Never fire a confirm-gated item from voice alone. Arm the
+            // cell on screen so one physical tap completes it.
+            showCell(hit.cardIdx, hit.cellIdx);
+            armed = { cardIdx: hit.cardIdx, cellIdx: hit.cellIdx, until: Date.now() + VOICE_ARM_WINDOW_MS };
+            if (armedTimer) clearTimeout(armedTimer);
+            armedTimer = setTimeout(() => { clearArmed(); renderGrid(); }, VOICE_ARM_WINDOW_MS + 50);
+            renderGrid();
+            return {
+              status: "awaiting_confirmation",
+              item: label,
+              next_action: "Tell the user to tap the highlighted cell within 10 seconds to confirm. Do not report it as done.",
+            };
+          }
+          const call = serviceForItem(hit.item);
+          if (!call) return { error: "unsupported_item", message: `${label} cannot be activated.` };
+          showCell(hit.cardIdx, hit.cellIdx);
+          renderGrid();
+          const status = await callService(...call, signal);
+          if (status === 403) throw new Error(`${label} is not allowed from the glasses.`);
+          if (status === 429) {
+            return { error: "rate_limited", message: "Too many actions in the last minute.", next_action: "Ask the user to wait a minute." };
+          }
+          if (status < 200 || status >= 300) throw new Error(`Home Assistant returned ${status} for ${label}.`);
+          return { ok: true, item: label, card: hit.card.name, note: "The display updates when Home Assistant reports the new state." };
+        },
+      },
+    ];
+
+    function registerVoiceTools() {
+      const mc = modelContext();
+      if (!mc || typeof mc.registerTool !== "function" || webmcpAbort) return;
+      webmcpAbort = new AbortController();
+      for (const tool of TOOLS) {
+        try {
+          Promise.resolve(mc.registerTool(tool, { signal: webmcpAbort.signal }))
+            .catch((err) => console.warn(`WebMCP: ${tool.name} rejected`, err));
+        } catch (err) {
+          console.warn(`WebMCP: ${tool.name} failed`, err);
+        }
+      }
+    }
+
+    function unregisterVoiceTools() {
+      if (!webmcpAbort) return;
+      webmcpAbort.abort();
+      webmcpAbort = null;
+    }
+
     // ----- Bootstrap ------------------------------------------------------
 
     async function startGlance() {
@@ -822,6 +1012,7 @@
       states = await fetchStates();
       renderGrid();
       connectWebsocket();
+      registerVoiceTools();
 
       // The websocket keeps states live, but the CARD list itself isn't
       // pushed — admin edits in the panel only show up if we poll. Every
